@@ -29,8 +29,8 @@ var (
 		"lctrl": true, "rctrl": true,
 		"lalt": true, "ralt": true,
 	}
-	// 単一英数字、ファンクションキー(f1-f12)、特殊キーのみ許可
-	validKeyRe = regexp.MustCompile(`^[a-z0-9]$|^f(1[0-2]|[1-9])$|^(space|enter|backspace|tab|escape|delete|home|end|pageup|pagedown|up|down|left|right|insert|capslock)$`)
+	// 印字可能ASCII単一文字、ファンクションキー(f1-f12)、特殊キーのみ許可
+	validKeyRe = regexp.MustCompile(`^[!-~]$|^f(1[0-2]|[1-9])$|^(space|enter|backspace|tab|escape|delete|home|end|pageup|pagedown|up|down|left|right|insert|capslock)$`)
 )
 
 func main() {

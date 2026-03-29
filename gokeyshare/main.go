@@ -178,14 +178,17 @@ func (k *keyReceiver) FocusLost()   { k.focused = false; k.Refresh() }
 
 func (k *keyReceiver) TypedRune(r rune) {
 	switch {
+	case r == ' ':
+		k.onKey("space", nil)
 	case r >= 'a' && r <= 'z':
 		k.onKey(string(r), nil)
 	case r >= 'A' && r <= 'Z':
 		k.onKey(string(r+32), []string{"shift"})
 	case r >= '0' && r <= '9':
 		k.onKey(string(r), nil)
-	case r == ' ':
-		k.onKey("space", nil)
+	case r > ' ' && r <= '~':
+		// その他の印字可能ASCII記号（. / , ; ' [ ] \ - = ` など）
+		k.onKey(string(r), nil)
 	}
 }
 

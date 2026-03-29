@@ -1,0 +1,20 @@
+namespace InputShare;
+
+enum EventType : byte {
+  KeyDown,
+  KeyUp
+}
+
+table KeyEvent {
+  // `key_char`から`key`に名前を変更し、主キーであることを明確化
+  key: string; 
+  // 変更点: 修飾キーのリスト（"alt", "ctrl"など）を格納
+  modifiers: [string]; 
+}
+
+table Event {
+  event_type: EventType;
+  key_event: KeyEvent;
+}
+
+root_type Event;

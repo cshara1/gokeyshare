@@ -1,0 +1,12 @@
+{
+    "addr_placeholder": "host:port",
+    "status_disconnected": "● Disconnected",
+    "status_connected": "● Connected: {{.Addr}}",
+    "status_failed": "● Connection failed: {{.Err}}",
+    "status_error": "● Error: {{.Err}}",
+    "btn_connect": "Connect",
+    "btn_disconnect": "Disconnect",
+    "log_header": "Send log:",
+    "key_area_idle": "Click here → Forward key input",
+    "key_area_active": "Forwarding — Press a key"
+}

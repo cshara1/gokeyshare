@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,11 +19,13 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/lang"
 	"fyne.io/fyne/v2/widget"
-
-	"strings"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
+
+//go:embed translations
+var translations embed.FS
 
 const writeTimeout = 10 * time.Second
 
@@ -34,18 +38,24 @@ var (
 
 func main() {
 	a := app.New()
+
+	// app.New() 後に登録することで、ロケール検出後にローカライザーへ確実に反映される
+	if err := lang.AddTranslationsFS(translations, "translations"); err != nil {
+		_ = err
+	}
+
 	w := a.NewWindow("gokeyshare")
 	w.Resize(fyne.NewSize(420, 380))
 	w.SetFixedSize(true)
 
 	servers := loadServers()
 	addrEntry := widget.NewSelectEntry(servers)
-	addrEntry.SetPlaceHolder("host:port")
+	addrEntry.SetPlaceHolder(lang.X("addr_placeholder", "host:port"))
 	if len(servers) > 0 {
 		addrEntry.SetText(servers[0])
 	}
 
-	statusLabel := widget.NewLabel("● 未接続")
+	statusLabel := widget.NewLabel(lang.X("status_disconnected", "● Disconnected"))
 
 	logs := []string{}
 	logLabel := widget.NewLabel("")
@@ -72,17 +82,17 @@ func main() {
 		}
 		data := buildEvent(key, mods)
 		if err := sendBuffer(c, data); err != nil {
-			statusLabel.SetText("● エラー: " + err.Error())
+			statusLabel.SetText(lang.X("status_error", "● Error: {{.Err}}", map[string]any{"Err": err.Error()}))
 			connMu.Lock()
 			conn = nil
 			connMu.Unlock()
-			connectBtn.SetText("接続")
+			connectBtn.SetText(lang.X("btn_connect", "Connect"))
 			return
 		}
 		addLog(fmt.Sprintf("Key=%-12q Mods=%v", key, mods))
 	})
 
-	connectBtn = widget.NewButton("接続", func() {
+	connectBtn = widget.NewButton(lang.X("btn_connect", "Connect"), func() {
 		connMu.Lock()
 		c := conn
 		connMu.Unlock()
@@ -92,15 +102,15 @@ func main() {
 			connMu.Lock()
 			conn = nil
 			connMu.Unlock()
-			connectBtn.SetText("接続")
-			statusLabel.SetText("● 未接続")
+			connectBtn.SetText(lang.X("btn_connect", "Connect"))
+			statusLabel.SetText(lang.X("status_disconnected", "● Disconnected"))
 			return
 		}
 
 		addr := addrEntry.Text
 		newConn, err := net.Dial("tcp", addr)
 		if err != nil {
-			statusLabel.SetText("● 接続失敗: " + err.Error())
+			statusLabel.SetText(lang.X("status_failed", "● Connection failed: {{.Err}}", map[string]any{"Err": err.Error()}))
 			return
 		}
 
@@ -113,8 +123,8 @@ func main() {
 		connMu.Lock()
 		conn = newConn
 		connMu.Unlock()
-		connectBtn.SetText("切断")
-		statusLabel.SetText("● 接続中: " + addr)
+		connectBtn.SetText(lang.X("btn_disconnect", "Disconnect"))
+		statusLabel.SetText(lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr}))
 
 		// 接続成功したアドレスを履歴に保存
 		servers = saveServer(addr, servers)
@@ -126,7 +136,7 @@ func main() {
 		statusLabel,
 		kr,
 		widget.NewSeparator(),
-		widget.NewLabel("送信ログ:"),
+		widget.NewLabel(lang.X("log_header", "Send log:")),
 		logLabel,
 	))
 
@@ -150,7 +160,7 @@ func newKeyReceiver(win fyne.Window, onKey func(string, []string)) *keyReceiver 
 
 func (k *keyReceiver) CreateRenderer() fyne.WidgetRenderer {
 	bg := canvas.NewRectangle(color.NRGBA{R: 50, G: 50, B: 70, A: 255})
-	text := canvas.NewText("ここをクリック → キー入力を転送", color.White)
+	text := canvas.NewText(lang.X("key_area_idle", "Click here → Forward key input"), color.White)
 	text.Alignment = fyne.TextAlignCenter
 	text.TextStyle = fyne.TextStyle{Bold: true}
 	obj := container.NewStack(bg, container.NewCenter(text))
@@ -282,10 +292,10 @@ func (r *keyReceiverRenderer) Objects() []fyne.CanvasObject      { return []fyne
 func (r *keyReceiverRenderer) Refresh() {
 	if r.k.focused {
 		r.bg.FillColor = color.NRGBA{R: 30, G: 100, B: 200, A: 255}
-		r.text.Text = "転送中 — キーを押してください"
+		r.text.Text = lang.X("key_area_active", "Forwarding — Press a key")
 	} else {
 		r.bg.FillColor = color.NRGBA{R: 50, G: 50, B: 70, A: 255}
-		r.text.Text = "ここをクリック → キー入力を転送"
+		r.text.Text = lang.X("key_area_idle", "Click here → Forward key input")
 	}
 	r.bg.Refresh()
 	r.text.Refresh()

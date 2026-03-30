@@ -291,9 +291,9 @@ func fyneKeyMap(name fyne.KeyName) string {
 	case fyne.KeyBackspace: return "backspace"
 	case fyne.KeyDelete:    return "delete"
 	case fyne.KeyEscape:    return "escape"
-	case fyne.KeyTab:       return "tab"
-	case fyne.KeySpace:     return "space"
-	case fyne.KeyUp:        return "up"
+	case fyne.KeyTab:  return "tab"
+	// KeySpace は TypedRune で処理するためここでは除外
+	case fyne.KeyUp:   return "up"
 	case fyne.KeyDown:      return "down"
 	case fyne.KeyLeft:      return "left"
 	case fyne.KeyRight:     return "right"

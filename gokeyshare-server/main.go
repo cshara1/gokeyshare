@@ -17,7 +17,6 @@ import (
 
 const (
 	maxMsgSize  = 1 * 1024 * 1024 // 1MB
-	readTimeout = 60 * time.Second
 	authTimeout = 5 * time.Second
 )
 
@@ -78,6 +77,12 @@ func handleConnection(conn net.Conn, secret string) {
 	log.Printf("クライアントが接続しました: %s", conn.RemoteAddr())
 	defer conn.Close()
 
+	// TCP keepalive を有効化して dead connection を検出する
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	if secret != "" {
 		if err := authenticate(conn, secret); err != nil {
 			log.Printf("認証失敗 (%s): %v", conn.RemoteAddr(), err)
@@ -87,7 +92,6 @@ func handleConnection(conn net.Conn, secret string) {
 
 	sizeBuf := make([]byte, 4) // ループ外で確保して再利用
 	for {
-		conn.SetReadDeadline(time.Now().Add(readTimeout))
 
 		if _, err := io.ReadFull(conn, sizeBuf); err != nil {
 			if err == io.EOF {

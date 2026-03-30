@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"encoding/binary"
 	"encoding/json"
@@ -108,7 +110,7 @@ func main() {
 		}
 
 		addr := addrEntry.Text
-		newConn, err := net.Dial("tcp", addr)
+		newConn, err := dial(addr)
 		if err != nil {
 			statusLabel.SetText(lang.X("status_failed", "● Connection failed: {{.Err}}", map[string]any{"Err": err.Error()}))
 			return
@@ -393,6 +395,29 @@ func saveServer(addr string, current []string) []string {
 }
 
 // --- networking ---
+
+func dial(addr string) (net.Conn, error) {
+	if os.Getenv("VKEYS_TLS") != "1" {
+		return net.Dial("tcp", addr)
+	}
+
+	tlsCfg := &tls.Config{}
+	if caFile := os.Getenv("VKEYS_CA"); caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("CA証明書の読み込みエラー: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA証明書の解析に失敗しました")
+		}
+		tlsCfg.RootCAs = pool
+	} else {
+		tlsCfg.InsecureSkipVerify = true
+	}
+
+	return tls.Dial("tcp", addr, tlsCfg)
+}
 
 func sendBuffer(c net.Conn, buf []byte) error {
 	sizeBuf := make([]byte, 4)

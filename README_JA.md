@@ -29,7 +29,7 @@ MSYS2 + MinGW-w64 が必要です。
 
 ```powershell
 # MSYS2 ターミナルで実行
-pacman -S mingw-w64-x86_64-gcc
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-mpc mingw-w64-x86_64-mpfr
 ```
 
 インストール後、`C:\msys64\mingw64\bin` を環境変数 PATH に追加してください。
@@ -46,14 +46,19 @@ go build -o gokeyshare ./gokeyshare/
 go build -o gokeyshare-server ./gokeyshare-server/
 ```
 
-### Windows（CMD ウィンドウなし）
+### Windows
+
+ビルド前に MinGW を PATH に追加し、`CC` を明示的に指定してください：
 
 ```powershell
-# クライアント
-GOARCH=amd64 GOOS=windows go build -ldflags "-H windowsgui" -o gokeyshare.exe .\gokeyshare\
+$env:PATH = "C:\msys64\mingw64\bin;" + $env:PATH
+$env:CC   = "C:\msys64\mingw64\bin\gcc.exe"
+
+# クライアント（CMD ウィンドウなし）
+go build -ldflags "-H windowsgui" -o gokeyshare.exe .\gokeyshare\
 
 # サーバー
-GOARCH=amd64 GOOS=windows go build -o gokeyshare-server.exe .\gokeyshare-server\
+go build -o gokeyshare-server.exe .\gokeyshare-server\
 ```
 
 ---

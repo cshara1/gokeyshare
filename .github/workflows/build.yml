@@ -1,0 +1,111 @@
+name: Build
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            server_out: server.exe
+            client_out: client.exe
+          - os: macos-latest
+            server_out: server
+            client_out: client
+          - os: ubuntu-latest
+            server_out: server
+            client_out: client
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Windows: MinGW-w64 (CGO 用)
+      - name: Setup MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      # Linux: X11 / OpenGL / input ヘッダ (Fyne + robotgo 用)
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libxtst-dev libpng-dev
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build server (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go build -o ${{ matrix.server_out }} ./gokeyshare-server/
+
+      - name: Build client (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go build -o ${{ matrix.client_out }} ./gokeyshare/
+
+      - name: Build server (non-Windows)
+        if: runner.os != 'Windows'
+        run: go build -o ${{ matrix.server_out }} ./gokeyshare-server/
+
+      - name: Build client (non-Windows)
+        if: runner.os != 'Windows'
+        run: go build -o ${{ matrix.client_out }} ./gokeyshare/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gokeyshare-${{ matrix.os }}
+          path: |
+            ${{ matrix.server_out }}
+            ${{ matrix.client_out }}
+          if-no-files-found: error
+
+  # タグ push 時にリリースを作成
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package artifacts
+        run: |
+          cd artifacts
+          for dir in */; do
+            zip -r "${dir%/}.zip" "$dir"
+          done
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip

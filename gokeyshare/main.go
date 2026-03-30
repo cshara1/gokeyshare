@@ -192,9 +192,49 @@ func (k *keyReceiver) TypedRune(r rune) {
 	}
 }
 
+// KeyDown は desktop.Keyable の実装。TypedKey/TypedRune より前に呼ばれる。
+// fyne がフォーカス移動に使う Tab や、修飾キーと組み合わせた Alt+key をここで捕捉する。
+func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
+	mods := currentMods(k.win)
+
+	switch ev.Name {
+	case fyne.KeyTab:
+		// fyne のフォーカス移動より先に横取り
+		k.onKey("tab", mods)
+	default:
+		// Alt が押されている場合、TypedRune では OS 変換後の文字が届くため
+		// ここで生のキー名を使って転送する
+		if len(mods) > 0 {
+			for _, m := range mods {
+				if m == "alt" {
+					if key := fyneKeyMap(ev.Name); key != "" {
+						k.onKey(key, mods)
+						return
+					}
+					// 単一文字キー（a-z, 0-9 など）
+					name := string(ev.Name)
+					if len(name) == 1 {
+						k.onKey(strings.ToLower(name), mods)
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
+func (k *keyReceiver) KeyUp(_ *fyne.KeyEvent) {}
+
 func (k *keyReceiver) TypedKey(ev *fyne.KeyEvent) {
+	mods := currentMods(k.win)
+	// Alt+key は KeyDown で処理済みのためスキップ
+	for _, m := range mods {
+		if m == "alt" {
+			return
+		}
+	}
 	if key := fyneKeyMap(ev.Name); key != "" {
-		k.onKey(key, currentMods(k.win))
+		k.onKey(key, mods)
 	}
 }
 

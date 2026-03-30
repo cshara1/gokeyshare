@@ -133,10 +133,34 @@ func main() {
 		addrEntry.SetOptions(servers)
 	})
 
+	pasteBtn := widget.NewButton(lang.X("btn_paste", "Paste to remote"), func() {
+		connMu.Lock()
+		c := conn
+		connMu.Unlock()
+		if c == nil {
+			return
+		}
+		text := a.Clipboard().Content()
+		if text == "" {
+			return
+		}
+		data := buildClipboardEvent(text)
+		if err := sendBuffer(c, data); err != nil {
+			statusLabel.SetText(lang.X("status_error", "● Error: {{.Err}}", map[string]any{"Err": err.Error()}))
+			connMu.Lock()
+			conn = nil
+			connMu.Unlock()
+			connectBtn.SetText(lang.X("btn_connect", "Connect"))
+			return
+		}
+		addLog(fmt.Sprintf("Clipboard: %d chars", len([]rune(text))))
+	})
+
 	w.SetContent(container.NewVBox(
 		container.NewBorder(nil, nil, nil, connectBtn, addrEntry),
 		statusLabel,
 		kr,
+		pasteBtn,
 		widget.NewSeparator(),
 		widget.NewLabel(lang.X("log_header", "Send log:")),
 		logLabel,
@@ -392,6 +416,32 @@ func saveServer(addr string, current []string) []string {
 		os.WriteFile(path, data, 0644)
 	}
 	return next
+}
+
+// --- clipboard ---
+
+func buildClipboardEvent(text string) []byte {
+	builderMu.Lock()
+	defer builderMu.Unlock()
+
+	builder.Reset()
+	textStr := builder.CreateString(text)
+
+	InputShare.KeyEventStartModifiersVector(builder, 0)
+	modsVec := builder.EndVector(0)
+
+	InputShare.KeyEventStart(builder)
+	InputShare.KeyEventAddKey(builder, textStr)
+	InputShare.KeyEventAddModifiers(builder, modsVec)
+	ke := InputShare.KeyEventEnd(builder)
+
+	InputShare.EventStart(builder)
+	InputShare.EventAddEventType(builder, InputShare.EventTypeClipboard)
+	InputShare.EventAddKeyEvent(builder, ke)
+	ev := InputShare.EventEnd(builder)
+
+	builder.Finish(ev)
+	return builder.FinishedBytes()
 }
 
 // --- networking ---

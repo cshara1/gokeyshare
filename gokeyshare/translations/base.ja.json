@@ -8,5 +8,6 @@
     "btn_disconnect": "切断",
     "log_header": "送信ログ:",
     "key_area_idle": "ここをクリック → キー入力を転送",
-    "key_area_active": "転送中 — キーを押してください"
+    "key_area_active": "転送中 — キーを押してください",
+    "btn_paste": "リモートに貼り付け"
 }

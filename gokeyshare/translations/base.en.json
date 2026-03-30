@@ -8,5 +8,6 @@
     "btn_disconnect": "Disconnect",
     "log_header": "Send log:",
     "key_area_idle": "Click here → Forward key input",
-    "key_area_active": "Forwarding — Press a key"
+    "key_area_active": "Forwarding — Press a key",
+    "btn_paste": "Paste to remote"
 }

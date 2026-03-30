@@ -137,6 +137,18 @@ func dispatchEvent(msgBuf []byte) {
 	keyEvent := new(InputShare.KeyEvent)
 	event.KeyEvent(keyEvent)
 
+	// クリップボードイベント: key フィールドにテキストが入っている
+	if event.EventType() == InputShare.EventTypeClipboard {
+		text := string(keyEvent.Key())
+		if err := robotgo.WriteAll(text); err != nil {
+			log.Printf("クリップボード書き込みエラー: %v", err)
+			return
+		}
+		robotgo.KeyTap("v", "ctrl")
+		log.Printf("クリップボード貼り付け: %d 文字", len([]rune(text)))
+		return
+	}
+
 	mainKey := string(keyEvent.Key())
 	if !validKeyRe.MatchString(mainKey) {
 		log.Printf("不正なキー名: %q", mainKey)

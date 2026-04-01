@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"gokeyshare/InputShare"
 	"image/color"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func main() {
 	}
 
 	w := a.NewWindow("gokeyshare")
-	w.Resize(fyne.NewSize(420, 380))
+	w.Resize(fyne.NewSize(420, 660))
 	w.SetFixedSize(true)
 
 	servers := loadServers()
@@ -74,8 +75,9 @@ func main() {
 	}
 
 	var connectBtn *widget.Button
+	var kr *keyReceiver
 
-	kr := newKeyReceiver(w, func(key string, mods []string) {
+	onKey := func(key string, mods []string) {
 		connMu.Lock()
 		c := conn
 		connMu.Unlock()
@@ -92,7 +94,19 @@ func main() {
 			return
 		}
 		addLog(fmt.Sprintf("Key=%-12q Mods=%v", key, mods))
+	}
+
+	savedLayout := a.Preferences().StringWithFallback("keyboard_layout", "us")
+	screenKb := newScreenKeyboard(savedLayout, onKey, func() { w.Canvas().Focus(kr) })
+	kr = newKeyReceiver(w, onKey)
+	kr.screenKb = screenKb
+
+	layoutSelect := widget.NewSelect(skLayoutNames(), func(name string) {
+		id := skLayoutIDByName(name)
+		screenKb.SetLayout(id)
+		a.Preferences().SetString("keyboard_layout", id)
 	})
+	layoutSelect.SetSelected(skLayoutNameByID(savedLayout))
 
 	connectBtn = widget.NewButton(lang.X("btn_connect", "Connect"), func() {
 		connMu.Lock()
@@ -106,6 +120,7 @@ func main() {
 			connMu.Unlock()
 			connectBtn.SetText(lang.X("btn_connect", "Connect"))
 			statusLabel.SetText(lang.X("status_disconnected", "● Disconnected"))
+			layoutSelect.SetOptions(skLayoutNames())
 			return
 		}
 
@@ -122,11 +137,29 @@ func main() {
 			newConn.SetWriteDeadline(time.Time{})
 		}
 
+		// サーバーのプラットフォームを問い合わせ
+		sendBuffer(newConn, buildPlatformQuery())
+		platform := readPlatformInfo(newConn)
+
 		connMu.Lock()
 		conn = newConn
 		connMu.Unlock()
 		connectBtn.SetText(lang.X("btn_disconnect", "Disconnect"))
 		statusLabel.SetText(lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr}))
+
+		// サーバーのプラットフォームに応じてレイアウト候補を絞り込む
+		names := skLayoutNamesForPlatform(platform)
+		layoutSelect.SetOptions(names)
+		currentValid := false
+		for _, n := range names {
+			if n == layoutSelect.Selected {
+				currentValid = true
+				break
+			}
+		}
+		if !currentValid && len(names) > 0 {
+			layoutSelect.SetSelected(names[0])
+		}
 
 		// 接続成功したアドレスを履歴に保存
 		servers = saveServer(addr, servers)
@@ -160,6 +193,8 @@ func main() {
 		container.NewBorder(nil, nil, nil, connectBtn, addrEntry),
 		statusLabel,
 		kr,
+		layoutSelect,
+		screenKb.Container,
 		pasteBtn,
 		widget.NewSeparator(),
 		widget.NewLabel(lang.X("log_header", "Send log:")),
@@ -173,9 +208,10 @@ func main() {
 
 type keyReceiver struct {
 	widget.BaseWidget
-	win     fyne.Window
-	onKey   func(string, []string)
-	focused bool
+	win      fyne.Window
+	onKey    func(string, []string)
+	focused  bool
+	screenKb *screenKeyboard
 }
 
 func newKeyReceiver(win fyne.Window, onKey func(string, []string)) *keyReceiver {
@@ -221,6 +257,11 @@ func (k *keyReceiver) TypedRune(r rune) {
 // KeyDown は desktop.Keyable の実装。TypedKey/TypedRune より前に呼ばれる。
 // fyne がフォーカス移動に使う Tab や、修飾キーと組み合わせた Alt+key をここで捕捉する。
 func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
+	if k.screenKb != nil {
+		if id := fyneNameToScreenID(ev.Name); id != "" {
+			k.screenKb.SetPressed(id, true)
+		}
+	}
 	mods := currentMods(k.win)
 
 	switch ev.Name {
@@ -249,7 +290,13 @@ func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
 	}
 }
 
-func (k *keyReceiver) KeyUp(_ *fyne.KeyEvent) {}
+func (k *keyReceiver) KeyUp(ev *fyne.KeyEvent) {
+	if k.screenKb != nil {
+		if id := fyneNameToScreenID(ev.Name); id != "" {
+			k.screenKb.SetPressed(id, false)
+		}
+	}
+}
 
 func (k *keyReceiver) TypedKey(ev *fyne.KeyEvent) {
 	mods := currentMods(k.win)
@@ -308,6 +355,7 @@ func modifierList(m fyne.KeyModifier) []string {
 	if m&fyne.KeyModifierShift   != 0 { mods = append(mods, "shift") }
 	if m&fyne.KeyModifierControl != 0 { mods = append(mods, "ctrl")  }
 	if m&fyne.KeyModifierAlt     != 0 { mods = append(mods, "alt")   }
+	if m&fyne.KeyModifierSuper   != 0 { mods = append(mods, "super") }
 	return mods
 }
 
@@ -416,6 +464,56 @@ func saveServer(addr string, current []string) []string {
 		os.WriteFile(path, data, 0644)
 	}
 	return next
+}
+
+// --- platform query ---
+
+func buildPlatformQuery() []byte {
+	builderMu.Lock()
+	defer builderMu.Unlock()
+
+	builder.Reset()
+	keyStr := builder.CreateString("")
+	InputShare.KeyEventStartModifiersVector(builder, 0)
+	modsVec := builder.EndVector(0)
+	InputShare.KeyEventStart(builder)
+	InputShare.KeyEventAddKey(builder, keyStr)
+	InputShare.KeyEventAddModifiers(builder, modsVec)
+	ke := InputShare.KeyEventEnd(builder)
+
+	InputShare.EventStart(builder)
+	InputShare.EventAddEventType(builder, InputShare.EventTypePlatformQuery)
+	InputShare.EventAddKeyEvent(builder, ke)
+	ev := InputShare.EventEnd(builder)
+
+	builder.Finish(ev)
+	return builder.FinishedBytes()
+}
+
+func readPlatformInfo(c net.Conn) string {
+	c.SetReadDeadline(time.Now().Add(time.Second))
+	defer c.SetReadDeadline(time.Time{})
+
+	sizeBuf := make([]byte, 4)
+	if _, err := io.ReadFull(c, sizeBuf); err != nil {
+		return ""
+	}
+	msgSize := binary.LittleEndian.Uint32(sizeBuf)
+	if msgSize == 0 || msgSize > 1024 {
+		return ""
+	}
+	msgBuf := make([]byte, msgSize)
+	if _, err := io.ReadFull(c, msgBuf); err != nil {
+		return ""
+	}
+
+	event := InputShare.GetRootAsEvent(msgBuf, 0)
+	if event.EventType() != InputShare.EventTypePlatformInfo {
+		return ""
+	}
+	ke := new(InputShare.KeyEvent)
+	event.KeyEvent(ke)
+	return string(ke.Key())
 }
 
 // --- clipboard ---

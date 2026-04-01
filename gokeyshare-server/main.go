@@ -10,8 +10,10 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"runtime"
 	"time"
 
+	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/go-vgo/robotgo"
 )
 
@@ -29,7 +31,7 @@ var (
 		"lalt": true, "ralt": true,
 	}
 	// 印字可能ASCII単一文字、ファンクションキー(f1-f12)、特殊キーのみ許可
-	validKeyRe = regexp.MustCompile(`^[!-~]$|^f(1[0-2]|[1-9])$|^(space|enter|backspace|tab|escape|delete|home|end|pageup|pagedown|up|down|left|right|insert|capslock)$`)
+	validKeyRe = regexp.MustCompile(`^[!-~]$|^f(1[0-2]|[1-9])$|^(space|enter|backspace|tab|escape|delete|home|end|pageup|pagedown|up|down|left|right|insert|capslock|lwin|rwin|lsuper|rsuper|lcmd|rcmd|fn|hankaku|muhenkan|henkan|kana|eisu|kana_mac)$`)
 )
 
 func main() {
@@ -114,7 +116,7 @@ func handleConnection(conn net.Conn, secret string) {
 			return
 		}
 
-		dispatchEvent(msgBuf)
+		dispatchEvent(msgBuf, conn)
 	}
 }
 
@@ -132,8 +134,14 @@ func authenticate(conn net.Conn, secret string) error {
 	return nil
 }
 
-func dispatchEvent(msgBuf []byte) {
+func dispatchEvent(msgBuf []byte, conn net.Conn) {
 	event := InputShare.GetRootAsEvent(msgBuf, 0)
+
+	if event.EventType() == InputShare.EventTypePlatformQuery {
+		sendPlatformInfo(conn)
+		return
+	}
+
 	keyEvent := new(InputShare.KeyEvent)
 	event.KeyEvent(keyEvent)
 
@@ -171,5 +179,54 @@ func dispatchEvent(msgBuf []byte) {
 	for i, v := range modifiers {
 		args[i] = v
 	}
+
+	// 特殊キーのリマッピング
+	switch mainKey {
+	case "lwin", "lsuper", "lcmd":
+		robotgo.KeyTap("cmd", args...)
+		return
+	case "rwin", "rsuper", "rcmd":
+		robotgo.KeyTap("rcmd", args...)
+		return
+	case "hankaku":
+		// 半角/全角: Alt+` で IME 切り替え
+		robotgo.KeyTap("`", "alt")
+		return
+	case "fn", "muhenkan", "henkan", "kana", "eisu", "kana_mac":
+		if !platformKeyTap(mainKey) {
+			log.Printf("  → 未対応キー: %q (このプラットフォームでは非対応)", mainKey)
+		}
+		return
+	}
+
 	robotgo.KeyTap(mainKey, args...)
+}
+
+func sendPlatformInfo(conn net.Conn) {
+	b := flatbuffers.NewBuilder(64)
+
+	platform := b.CreateString(runtime.GOOS)
+	InputShare.KeyEventStartModifiersVector(b, 0)
+	modsVec := b.EndVector(0)
+	InputShare.KeyEventStart(b)
+	InputShare.KeyEventAddKey(b, platform)
+	InputShare.KeyEventAddModifiers(b, modsVec)
+	ke := InputShare.KeyEventEnd(b)
+
+	InputShare.EventStart(b)
+	InputShare.EventAddEventType(b, InputShare.EventTypePlatformInfo)
+	InputShare.EventAddKeyEvent(b, ke)
+	ev := InputShare.EventEnd(b)
+	b.Finish(ev)
+
+	buf := b.FinishedBytes()
+	sizeBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(sizeBuf, uint32(len(buf)))
+
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.Write(sizeBuf)
+	conn.Write(buf)
+	conn.SetWriteDeadline(time.Time{})
+
+	log.Printf("プラットフォーム情報を送信: %s", runtime.GOOS)
 }

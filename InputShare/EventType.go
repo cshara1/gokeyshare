@@ -7,21 +7,27 @@ import "strconv"
 type EventType int8
 
 const (
-	EventTypeKeyDown  EventType = 0
-	EventTypeKeyUp    EventType = 1
-	EventTypeClipboard EventType = 2
+	EventTypeKeyDown        EventType = 0
+	EventTypeKeyUp          EventType = 1
+	EventTypeClipboard      EventType = 2
+	EventTypePlatformQuery  EventType = 3
+	EventTypePlatformInfo   EventType = 4
 )
 
 var EnumNamesEventType = map[EventType]string{
-	EventTypeKeyDown:  "KeyDown",
-	EventTypeKeyUp:    "KeyUp",
-	EventTypeClipboard: "Clipboard",
+	EventTypeKeyDown:        "KeyDown",
+	EventTypeKeyUp:          "KeyUp",
+	EventTypeClipboard:      "Clipboard",
+	EventTypePlatformQuery:  "PlatformQuery",
+	EventTypePlatformInfo:   "PlatformInfo",
 }
 
 var EnumValuesEventType = map[string]EventType{
-	"KeyDown":  EventTypeKeyDown,
-	"KeyUp":    EventTypeKeyUp,
-	"Clipboard": EventTypeClipboard,
+	"KeyDown":        EventTypeKeyDown,
+	"KeyUp":          EventTypeKeyUp,
+	"Clipboard":      EventTypeClipboard,
+	"PlatformQuery":  EventTypePlatformQuery,
+	"PlatformInfo":   EventTypePlatformInfo,
 }
 
 func (v EventType) String() string {

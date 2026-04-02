@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"embed"
@@ -23,6 +24,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/lang"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
@@ -48,8 +50,7 @@ func main() {
 	}
 
 	w := a.NewWindow("gokeyshare")
-	w.Resize(fyne.NewSize(420, 660))
-	w.SetFixedSize(true)
+	w.Resize(fyne.NewSize(480, 500))
 
 	servers := loadServers()
 	addrEntry := widget.NewSelectEntry(servers)
@@ -76,6 +77,7 @@ func main() {
 
 	var connectBtn *widget.Button
 	var kr *keyReceiver
+	var retryCancel context.CancelFunc
 
 	onKey := func(key string, mods []string) {
 		connMu.Lock()
@@ -105,16 +107,103 @@ func main() {
 		id := skLayoutIDByName(name)
 		screenKb.SetLayout(id)
 		a.Preferences().SetString("keyboard_layout", id)
+		fyne.Do(func() { w.Canvas().Focus(kr) })
 	})
 	layoutSelect.SetSelected(skLayoutNameByID(savedLayout))
+
+	// completeConnection はダイアル成功後の共通処理
+	completeConnection := func(newConn net.Conn, addr string) {
+		if secret := os.Getenv("VKEYS_SECRET"); secret != "" {
+			newConn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			newConn.Write([]byte(secret))
+			newConn.SetWriteDeadline(time.Time{})
+		}
+
+		sendBuffer(newConn, buildPlatformQuery())
+		platform := readPlatformInfo(newConn)
+
+		fyne.Do(func() {
+			connMu.Lock()
+			conn = newConn
+			connMu.Unlock()
+			connectBtn.SetText(lang.X("btn_disconnect", "Disconnect"))
+			statusLabel.SetText(lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr}))
+
+			names := skLayoutNamesForPlatform(platform)
+			layoutSelect.SetOptions(names)
+			currentValid := false
+			for _, n := range names {
+				if n == layoutSelect.Selected {
+					currentValid = true
+					break
+				}
+			}
+			if !currentValid && len(names) > 0 {
+				layoutSelect.SetSelected(names[0])
+			}
+
+			servers = saveServer(addr, servers)
+			addrEntry.SetOptions(servers)
+			w.Canvas().Focus(kr)
+		})
+	}
+
+	// startConnect はリトライ付き接続を goroutine で開始
+	startConnect := func(addr string) {
+		if retryCancel != nil {
+			retryCancel()
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		retryCancel = cancel
+
+		connectBtn.SetText(lang.X("btn_disconnect", "Disconnect"))
+
+		go func() {
+			backoff := time.Second
+			const maxBackoff = 10 * time.Second
+
+			for {
+				newConn, err := dial(addr)
+				if err == nil {
+					completeConnection(newConn, addr)
+					return
+				}
+
+				// 接続失敗 → リトライ待機
+				fyne.Do(func() {
+					statusLabel.SetText(lang.X("status_retrying",
+						"● Retrying in {{.Sec}}s...",
+						map[string]any{"Sec": int(backoff.Seconds())}))
+				})
+
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+		}()
+	}
 
 	connectBtn = widget.NewButton(lang.X("btn_connect", "Connect"), func() {
 		connMu.Lock()
 		c := conn
 		connMu.Unlock()
 
-		if c != nil {
-			c.Close()
+		if c != nil || retryCancel != nil {
+			// 切断 or リトライキャンセル
+			if retryCancel != nil {
+				retryCancel()
+				retryCancel = nil
+			}
+			if c != nil {
+				c.Close()
+			}
 			connMu.Lock()
 			conn = nil
 			connMu.Unlock()
@@ -124,46 +213,7 @@ func main() {
 			return
 		}
 
-		addr := addrEntry.Text
-		newConn, err := dial(addr)
-		if err != nil {
-			statusLabel.SetText(lang.X("status_failed", "● Connection failed: {{.Err}}", map[string]any{"Err": err.Error()}))
-			return
-		}
-
-		if secret := os.Getenv("VKEYS_SECRET"); secret != "" {
-			newConn.SetWriteDeadline(time.Now().Add(writeTimeout))
-			newConn.Write([]byte(secret))
-			newConn.SetWriteDeadline(time.Time{})
-		}
-
-		// サーバーのプラットフォームを問い合わせ
-		sendBuffer(newConn, buildPlatformQuery())
-		platform := readPlatformInfo(newConn)
-
-		connMu.Lock()
-		conn = newConn
-		connMu.Unlock()
-		connectBtn.SetText(lang.X("btn_disconnect", "Disconnect"))
-		statusLabel.SetText(lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr}))
-
-		// サーバーのプラットフォームに応じてレイアウト候補を絞り込む
-		names := skLayoutNamesForPlatform(platform)
-		layoutSelect.SetOptions(names)
-		currentValid := false
-		for _, n := range names {
-			if n == layoutSelect.Selected {
-				currentValid = true
-				break
-			}
-		}
-		if !currentValid && len(names) > 0 {
-			layoutSelect.SetSelected(names[0])
-		}
-
-		// 接続成功したアドレスを履歴に保存
-		servers = saveServer(addr, servers)
-		addrEntry.SetOptions(servers)
+		startConnect(addrEntry.Text)
 	})
 
 	pasteBtn := widget.NewButton(lang.X("btn_paste", "Paste to remote"), func() {
@@ -187,19 +237,65 @@ func main() {
 			return
 		}
 		addLog(fmt.Sprintf("Clipboard: %d chars", len([]rune(text))))
+		fyne.Do(func() { w.Canvas().Focus(kr) })
 	})
 
-	w.SetContent(container.NewVBox(
-		container.NewBorder(nil, nil, nil, connectBtn, addrEntry),
-		statusLabel,
-		kr,
-		layoutSelect,
-		screenKb.Container,
-		pasteBtn,
+	// --- 履歴クリアボタン ---
+	clearBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+		os.Remove(serversPath())
+		servers = []string{}
+		addrEntry.SetOptions(servers)
+		addrEntry.SetText("")
+		fyne.Do(func() { w.Canvas().Focus(kr) })
+	})
+
+	// --- ログトグル ---
+	logContainer := container.NewVBox(
 		widget.NewSeparator(),
 		widget.NewLabel(lang.X("log_header", "Send log:")),
 		logLabel,
+	)
+	logContainer.Hide()
+	var logToggle *widget.Button
+	logToggle = widget.NewButton(lang.X("btn_log_show", "Log ▼"), func() {
+		if logContainer.Visible() {
+			logContainer.Hide()
+			logToggle.SetText(lang.X("btn_log_show", "Log ▼"))
+		} else {
+			logContainer.Show()
+			logToggle.SetText(lang.X("btn_log_hide", "Log ▲"))
+		}
+		fyne.Do(func() { w.Canvas().Focus(kr) })
+	})
+
+	// --- レイアウト構成 ---
+	topBar := container.NewBorder(nil, nil, nil,
+		container.NewHBox(clearBtn, connectBtn), addrEntry)
+
+	bottomButtons := container.NewBorder(nil, nil, nil,
+		logToggle, pasteBtn)
+
+	center := container.NewBorder(layoutSelect, bottomButtons, nil, nil,
+		screenKb.Container)
+
+	w.SetContent(container.NewBorder(
+		topBar,       // top
+		container.NewVBox(logContainer, statusLabel), // bottom
+		nil, nil,
+		center, // center expands
 	))
+
+	// --- ウィンドウ全体でキー入力を捕捉 ---
+	// Canvas レベルのフォールバック: フォーカスが kr 以外にあるときもキーを転送
+	w.Canvas().SetOnTypedRune(func(r rune) { kr.TypedRune(r) })
+	w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) { kr.TypedKey(ev) })
+	if dc, ok := w.Canvas().(desktop.Canvas); ok {
+		dc.SetOnKeyDown(func(ev *fyne.KeyEvent) { kr.KeyDown(ev) })
+		dc.SetOnKeyUp(func(ev *fyne.KeyEvent) { kr.KeyUp(ev) })
+	}
+
+	// 起動時に keyReceiver にフォーカスを設定
+	w.Canvas().Focus(kr)
 
 	w.ShowAndRun()
 }
@@ -208,10 +304,20 @@ func main() {
 
 type keyReceiver struct {
 	widget.BaseWidget
-	win      fyne.Window
-	onKey    func(string, []string)
-	focused  bool
-	screenKb *screenKeyboard
+	win            fyne.Window
+	onKey          func(string, []string)
+	focused        bool
+	screenKb       *screenKeyboard
+	tabJustPressed bool
+	pendingMod     string // 単独押しの候補となっている修飾キーID（空なら候補なし）
+}
+
+// standaloneModMap: 修飾キーの画面キーID → サーバーに送信するキー名
+var standaloneModMap = map[string]string{
+	"lshift": "shift", "rshift": "shift",
+	"lctrl":  "ctrl",  "rctrl":  "ctrl",
+	"lalt":   "alt",   "ralt":   "alt",
+	"lsuper": "lsuper", "rsuper": "rsuper",
 }
 
 func newKeyReceiver(win fyne.Window, onKey func(string, []string)) *keyReceiver {
@@ -221,22 +327,33 @@ func newKeyReceiver(win fyne.Window, onKey func(string, []string)) *keyReceiver 
 }
 
 func (k *keyReceiver) CreateRenderer() fyne.WidgetRenderer {
-	bg := canvas.NewRectangle(color.NRGBA{R: 50, G: 50, B: 70, A: 255})
-	text := canvas.NewText(lang.X("key_area_idle", "Click here → Forward key input"), color.White)
-	text.Alignment = fyne.TextAlignCenter
-	text.TextStyle = fyne.TextStyle{Bold: true}
-	obj := container.NewStack(bg, container.NewCenter(text))
-	return &keyReceiverRenderer{k: k, bg: bg, text: text, obj: obj}
+	// keyReceiver は非表示（フォーカス対象としてのみ存在）
+	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
-func (k *keyReceiver) MinSize() fyne.Size { return fyne.NewSize(400, 80) }
+func (k *keyReceiver) MinSize() fyne.Size { return fyne.NewSize(0, 0) }
 
 func (k *keyReceiver) Tapped(_ *fyne.PointEvent) {
 	k.win.Canvas().Focus(k)
 }
 
 func (k *keyReceiver) FocusGained() { k.focused = true; k.Refresh() }
-func (k *keyReceiver) FocusLost()   { k.focused = false; k.Refresh() }
+func (k *keyReceiver) FocusLost() {
+	reacquire := k.tabJustPressed
+	k.tabJustPressed = false
+	k.pendingMod = ""
+	k.focused = false
+	k.Refresh()
+	if k.screenKb != nil {
+		k.screenKb.ClearAllPressed()
+	}
+	if reacquire {
+		// FocusLost 内での Focus() 呼び出しは再入問題を起こすため次のイベントループで実行
+		fyne.Do(func() {
+			k.win.Canvas().Focus(k)
+		})
+	}
+}
 
 func (k *keyReceiver) TypedRune(r rune) {
 	switch {
@@ -257,11 +374,26 @@ func (k *keyReceiver) TypedRune(r rune) {
 // KeyDown は desktop.Keyable の実装。TypedKey/TypedRune より前に呼ばれる。
 // fyne がフォーカス移動に使う Tab や、修飾キーと組み合わせた Alt+key をここで捕捉する。
 func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
-	if k.screenKb != nil {
-		if id := fyneNameToScreenID(ev.Name); id != "" {
-			k.screenKb.SetPressed(id, true)
-		}
+	if ev.Name == fyne.KeyTab {
+		k.tabJustPressed = true
 	}
+
+	id := fyneNameToScreenID(ev.Name)
+	if k.screenKb != nil && id != "" {
+		k.screenKb.SetPressed(id, true)
+	}
+
+	// 修飾キー単独送信の追跡: 修飾キーなら候補に、それ以外ならクリア
+	if _, isMod := standaloneModMap[id]; isMod {
+		if k.pendingMod == "" {
+			k.pendingMod = id
+		} else {
+			k.pendingMod = "" // 複数修飾キー同時押し → 単独送信しない
+		}
+	} else if id != "" {
+		k.pendingMod = "" // 通常キー押下 → 修飾キーは修飾子として使用済み
+	}
+
 	mods := currentMods(k.win)
 
 	switch ev.Name {
@@ -291,10 +423,14 @@ func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
 }
 
 func (k *keyReceiver) KeyUp(ev *fyne.KeyEvent) {
-	if k.screenKb != nil {
-		if id := fyneNameToScreenID(ev.Name); id != "" {
-			k.screenKb.SetPressed(id, false)
-		}
+	id := fyneNameToScreenID(ev.Name)
+	if k.screenKb != nil && id != "" {
+		k.screenKb.SetPressed(id, false)
+	}
+	// 修飾キー単独送信: KeyDown〜KeyUp の間に他のキーが押されなかった場合
+	if keyName, isMod := standaloneModMap[id]; isMod && k.pendingMod == id {
+		k.pendingMod = ""
+		k.onKey(keyName, nil)
 	}
 }
 
@@ -392,31 +528,7 @@ func fyneKeyMap(name fyne.KeyName) string {
 	return ""
 }
 
-// --- renderer ---
-
-type keyReceiverRenderer struct {
-	k    *keyReceiver
-	bg   *canvas.Rectangle
-	text *canvas.Text
-	obj  *fyne.Container
-}
-
-func (r *keyReceiverRenderer) Layout(size fyne.Size)             { r.obj.Resize(size) }
-func (r *keyReceiverRenderer) MinSize() fyne.Size                { return fyne.NewSize(400, 80) }
-func (r *keyReceiverRenderer) Destroy()                          {}
-func (r *keyReceiverRenderer) Objects() []fyne.CanvasObject      { return []fyne.CanvasObject{r.obj} }
-
-func (r *keyReceiverRenderer) Refresh() {
-	if r.k.focused {
-		r.bg.FillColor = color.NRGBA{R: 30, G: 100, B: 200, A: 255}
-		r.text.Text = lang.X("key_area_active", "Forwarding — Press a key")
-	} else {
-		r.bg.FillColor = color.NRGBA{R: 50, G: 50, B: 70, A: 255}
-		r.text.Text = lang.X("key_area_idle", "Click here → Forward key input")
-	}
-	r.bg.Refresh()
-	r.text.Refresh()
-}
+// keyReceiverRenderer は廃止（keyReceiver は非表示ウィジェット）
 
 // --- server history ---
 

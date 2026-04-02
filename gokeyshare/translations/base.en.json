@@ -9,5 +9,8 @@
     "log_header": "Send log:",
     "key_area_idle": "Click here → Forward key input",
     "key_area_active": "Forwarding — Press a key",
-    "btn_paste": "Paste to remote"
+    "btn_paste": "Paste to remote",
+    "btn_log_show": "Log ▼",
+    "btn_log_hide": "Log ▲",
+    "status_retrying": "● Retrying in {{.Sec}}s..."
 }

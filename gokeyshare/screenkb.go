@@ -10,12 +10,14 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// --- Screen keyboard constants ---
+// --- Screen keyboard constants (natural/minimum sizes) ---
 
 const (
-	skUnit float32 = 27
-	skKeyH float32 = 26
-	skGap  float32 = 1
+	skUnit    float32 = 27 // base unit width for key sizing
+	skKeyH    float32 = 26 // base key height
+	skGap     float32 = 1  // base gap between keys
+	skRowUnits float32 = 15 // widest row in units (standard keyboard)
+	skNumRows  float32 = 8  // number of keyboard rows
 )
 
 var (
@@ -76,7 +78,8 @@ var (
 		skK(",", ",", 1), skK(".", ".", 1), skK("/", "/", 1),
 		skK("Shift", "rshift", 2.75),
 	}
-	skArrowUpRow = []skKeyDef{skSpacer(12), skK("↑", "up", 1), skSpacer(2)}
+	// 矢印行は同じアイテム数・同じ合計幅にして ↑ と ↓ の X 位置を揃える
+	skArrowUpRow = []skKeyDef{skSpacer(11), skSpacer(1), skK("↑", "up", 1), skSpacer(1)}
 	skArrowLRRow = []skKeyDef{skSpacer(11), skK("←", "left", 1), skK("↓", "down", 1), skK("→", "right", 1)}
 )
 
@@ -243,8 +246,11 @@ func skBuildAllRows(layout *skLayoutDef) [][]skKeyDef {
 
 // --- screenKeyboard ---
 
+var skColorBg = color.NRGBA{R: 230, G: 230, B: 233, A: 255}
+
 type screenKeyboard struct {
-	Container    *fyne.Container
+	Container    *fyne.Container // Stack(background, keyboard rows)
+	kbRows       *fyne.Container // keyboard rows with skBoardLayout
 	keys         map[string]*skKey
 	mu           sync.Mutex
 	onSupplement func(string, []string)
@@ -252,11 +258,15 @@ type screenKeyboard struct {
 }
 
 func newScreenKeyboard(layoutID string, onSupplement func(string, []string), refocus func()) *screenKeyboard {
+	bg := canvas.NewRectangle(skColorBg)
+	bg.CornerRadius = 6
+	rows := container.New(&skBoardLayout{})
 	sk := &screenKeyboard{
 		keys:         make(map[string]*skKey),
 		onSupplement: onSupplement,
 		refocus:      refocus,
-		Container:    container.NewVBox(),
+		kbRows:       rows,
+		Container:    container.NewStack(bg, rows),
 	}
 	sk.SetLayout(layoutID)
 	return sk
@@ -283,8 +293,8 @@ func (sk *screenKeyboard) SetLayout(layoutID string) {
 		}
 	}
 
-	sk.Container.Objects = rowObjects
-	sk.Container.Refresh()
+	sk.kbRows.Objects = rowObjects
+	sk.kbRows.Refresh()
 }
 
 func (sk *screenKeyboard) buildRow(rowDef []skKeyDef) fyne.CanvasObject {
@@ -316,6 +326,14 @@ func (sk *screenKeyboard) buildRow(rowDef []skKeyDef) fyne.CanvasObject {
 		items = append(items, kw)
 	}
 	return container.New(&skRowLayout{gap: skGap}, items...)
+}
+
+func (sk *screenKeyboard) ClearAllPressed() {
+	sk.mu.Lock()
+	defer sk.mu.Unlock()
+	for _, kw := range sk.keys {
+		kw.setPressed(false)
+	}
 }
 
 func (sk *screenKeyboard) SetPressed(id string, pressed bool) {
@@ -375,7 +393,12 @@ type skKeyRenderer struct {
 	container *fyne.Container
 }
 
-func (r *skKeyRenderer) Layout(size fyne.Size)        { r.container.Resize(size) }
+func (r *skKeyRenderer) Layout(size fyne.Size) {
+	r.container.Resize(size)
+	// Scale font with key height
+	r.label.TextSize = 10 * (size.Height / skKeyH)
+	r.bg.CornerRadius = 3 * (size.Height / skKeyH)
+}
 func (r *skKeyRenderer) MinSize() fyne.Size            { return r.k.MinSize() }
 func (r *skKeyRenderer) Destroy()                      {}
 func (r *skKeyRenderer) Objects() []fyne.CanvasObject  { return []fyne.CanvasObject{r.container} }
@@ -413,7 +436,7 @@ func (s *skSpacerWidget) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
 }
 
-// --- Row layout ---
+// --- Row layout (scales keys proportionally to fill available width) ---
 
 type skRowLayout struct {
 	gap float32
@@ -435,15 +458,83 @@ func (l *skRowLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 }
 
 func (l *skRowLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	minSize := l.MinSize(objects)
+	if minSize.Width <= 0 {
+		return
+	}
+	scale := size.Width / minSize.Width
+
 	x := float32(0)
 	for i, o := range objects {
 		if i > 0 {
-			x += l.gap
+			x += l.gap * scale
 		}
 		ms := o.MinSize()
-		o.Resize(fyne.NewSize(ms.Width, size.Height))
+		w := ms.Width * scale
+		o.Resize(fyne.NewSize(w, size.Height))
 		o.Move(fyne.NewPos(x, 0))
-		x += ms.Width
+		x += w
+	}
+}
+
+// --- Board layout (stacks rows vertically, maintaining keyboard aspect ratio) ---
+
+type skBoardLayout struct{}
+
+func (l *skBoardLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	// Natural size: widest row width × total row heights
+	var maxW float32
+	var totalH float32
+	for i, o := range objects {
+		ms := o.MinSize()
+		if ms.Width > maxW {
+			maxW = ms.Width
+		}
+		totalH += ms.Height
+		if i > 0 {
+			totalH += skGap
+		}
+	}
+	return fyne.NewSize(maxW, totalH)
+}
+
+func (l *skBoardLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	minSize := l.MinSize(objects)
+	if minSize.Width <= 0 || minSize.Height <= 0 {
+		return
+	}
+
+	// Scale uniformly based on width to maintain aspect ratio
+	scale := size.Width / minSize.Width
+	scaledH := minSize.Height * scale
+
+	// If scaled height exceeds available height, shrink by height instead
+	if scaledH > size.Height {
+		scale = size.Height / minSize.Height
+	}
+
+	// Center vertically if there's extra space
+	totalH := float32(0)
+	for i, o := range objects {
+		totalH += o.MinSize().Height * scale
+		if i > 0 {
+			totalH += skGap * scale
+		}
+	}
+	y := (size.Height - totalH) / 2
+	if y < 0 {
+		y = 0
+	}
+
+	for i, o := range objects {
+		if i > 0 {
+			y += skGap * scale
+		}
+		ms := o.MinSize()
+		rowH := ms.Height * scale
+		o.Resize(fyne.NewSize(size.Width, rowH))
+		o.Move(fyne.NewPos(0, y))
+		y += rowH
 	}
 }
 

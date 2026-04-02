@@ -31,7 +31,7 @@ var (
 		"lalt": true, "ralt": true,
 	}
 	// 印字可能ASCII単一文字、ファンクションキー(f1-f12)、特殊キーのみ許可
-	validKeyRe = regexp.MustCompile(`^[!-~]$|^f(1[0-2]|[1-9])$|^(space|enter|backspace|tab|escape|delete|home|end|pageup|pagedown|up|down|left|right|insert|capslock|lwin|rwin|lsuper|rsuper|lcmd|rcmd|fn|hankaku|muhenkan|henkan|kana|eisu|kana_mac)$`)
+	validKeyRe = regexp.MustCompile(`^[!-~]$|^f(1[0-2]|[1-9])$|^(space|enter|backspace|tab|escape|delete|home|end|pageup|pagedown|up|down|left|right|insert|capslock|alt|shift|ctrl|lwin|rwin|lsuper|rsuper|lcmd|rcmd|fn|hankaku|muhenkan|henkan|kana|eisu|kana_mac)$`)
 )
 
 func main() {

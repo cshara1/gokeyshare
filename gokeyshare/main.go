@@ -96,6 +96,8 @@ func main() {
 	var connectBtn *widget.Button
 	var kr *keyReceiver
 	var retryCancel context.CancelFunc
+	var lastAddr string          // 最後に接続したアドレス（自動再接続用）
+	var startConnect func(string) // 前方宣言（onKey から参照するため）
 
 	onKey := func(key string, mods []string) {
 		connMu.Lock()
@@ -106,11 +108,14 @@ func main() {
 		}
 		data := buildEvent(key, mods)
 		if err := sendBuffer(c, data); err != nil {
-			statusLabel.SetText(lang.X("status_error", "● Error: {{.Err}}", map[string]any{"Err": err.Error()}))
+			c.Close()
 			connMu.Lock()
 			conn = nil
 			connMu.Unlock()
-			connectBtn.SetText(lang.X("btn_connect", "Connect"))
+			// 自動再接続
+			if lastAddr != "" {
+				startConnect(lastAddr)
+			}
 			return
 		}
 		addLog(fmt.Sprintf("Key=%-12q Mods=%v", key, mods))
@@ -144,6 +149,7 @@ func main() {
 			connMu.Lock()
 			conn = newConn
 			connMu.Unlock()
+			lastAddr = addr
 			connectBtn.SetText(lang.X("btn_disconnect", "Disconnect"))
 			statusLabel.SetText(lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr}))
 
@@ -167,7 +173,7 @@ func main() {
 	}
 
 	// startConnect はリトライ付き接続を goroutine で開始
-	startConnect := func(addr string) {
+	startConnect = func(addr string) {
 		if retryCancel != nil {
 			retryCancel()
 		}
@@ -179,8 +185,9 @@ func main() {
 		go func() {
 			backoff := time.Second
 			const maxBackoff = 10 * time.Second
+			const maxRetries = 5
 
-			for {
+			for attempt := 0; attempt < maxRetries; attempt++ {
 				newConn, err := dial(addr)
 				if err == nil {
 					completeConnection(newConn, addr)
@@ -205,6 +212,16 @@ func main() {
 					backoff = maxBackoff
 				}
 			}
+
+			// リトライ上限到達
+			fyne.Do(func() {
+				retryCancel = nil
+				lastAddr = ""
+				connectBtn.SetText(lang.X("btn_connect", "Connect"))
+				statusLabel.SetText(lang.X("status_failed",
+					"● Connection failed: {{.Err}}",
+					map[string]any{"Err": fmt.Sprintf("max retries (%d) exceeded", maxRetries)}))
+			})
 		}()
 	}
 
@@ -225,6 +242,7 @@ func main() {
 			connMu.Lock()
 			conn = nil
 			connMu.Unlock()
+			lastAddr = ""
 			connectBtn.SetText(lang.X("btn_connect", "Connect"))
 			statusLabel.SetText(lang.X("status_disconnected", "● Disconnected"))
 			layoutSelect.SetOptions(skLayoutNames())
@@ -298,19 +316,17 @@ func main() {
 
 	w.SetContent(container.NewBorder(
 		topBar,       // top
-		container.NewVBox(logContainer, statusLabel), // bottom
+		container.NewVBox(logContainer, container.NewStack(statusLabel, kr)), // bottom
 		nil, nil,
 		center, // center expands
 	))
 
 	// --- ウィンドウ全体でキー入力を捕捉 ---
 	// Canvas レベルのフォールバック: フォーカスが kr 以外にあるときもキーを転送
+	// 注: SetOnKeyDown/SetOnKeyUp は全キーイベントを横取りするため使用しない
+	//     （addrEntry 等の入力を妨げる）
 	w.Canvas().SetOnTypedRune(func(r rune) { kr.TypedRune(r) })
 	w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) { kr.TypedKey(ev) })
-	if dc, ok := w.Canvas().(desktop.Canvas); ok {
-		dc.SetOnKeyDown(func(ev *fyne.KeyEvent) { kr.KeyDown(ev) })
-		dc.SetOnKeyUp(func(ev *fyne.KeyEvent) { kr.KeyUp(ev) })
-	}
 
 	// 起動時に keyReceiver にフォーカスを設定
 	w.Canvas().Focus(kr)
@@ -328,6 +344,7 @@ type keyReceiver struct {
 	screenKb       *screenKeyboard
 	tabJustPressed bool
 	pendingMod     string // 単独押しの候補となっている修飾キーID（空なら候補なし）
+	keyDownHandled bool   // KeyDown で修飾キー+通常キーを送信済みフラグ
 }
 
 // standaloneModMap: 修飾キーの画面キーID → サーバーに送信するキー名
@@ -374,6 +391,10 @@ func (k *keyReceiver) FocusLost() {
 }
 
 func (k *keyReceiver) TypedRune(r rune) {
+	if k.keyDownHandled {
+		k.keyDownHandled = false
+		return
+	}
 	switch {
 	case r == ' ':
 		k.onKey("space", nil)
@@ -419,22 +440,22 @@ func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
 		// fyne のフォーカス移動より先に横取り
 		k.onKey("tab", mods)
 	default:
-		// Alt が押されている場合、TypedRune では OS 変換後の文字が届くため
-		// ここで生のキー名を使って転送する
+		// 修飾キー＋通常キーの組み合わせを処理
+		// Alt: TypedRune では OS 変換後の文字が届くためここで捕捉
+		// Ctrl/Super: TypedShortcut で処理されない場合のフォールバック
 		if len(mods) > 0 {
-			for _, m := range mods {
-				if m == "alt" {
-					if key := fyneKeyMap(ev.Name); key != "" {
-						k.onKey(key, mods)
-						return
-					}
-					// 単一文字キー（a-z, 0-9 など）
-					name := string(ev.Name)
-					if len(name) == 1 {
-						k.onKey(strings.ToLower(name), mods)
-					}
+			_, evIsMod := standaloneModMap[id]
+			if !evIsMod {
+				k.keyDownHandled = true
+				if key := fyneKeyMap(ev.Name); key != "" {
+					k.onKey(key, mods)
 					return
 				}
+				name := string(ev.Name)
+				if len(name) == 1 {
+					k.onKey(strings.ToLower(name), mods)
+				}
+				return
 			}
 		}
 	}
@@ -453,6 +474,10 @@ func (k *keyReceiver) KeyUp(ev *fyne.KeyEvent) {
 }
 
 func (k *keyReceiver) TypedKey(ev *fyne.KeyEvent) {
+	if k.keyDownHandled {
+		k.keyDownHandled = false
+		return
+	}
 	mods := currentMods(k.win)
 	// Alt+key は KeyDown で処理済みのためスキップ
 	for _, m := range mods {
@@ -467,6 +492,10 @@ func (k *keyReceiver) TypedKey(ev *fyne.KeyEvent) {
 
 // TypedShortcut は Ctrl+C/V/Z など fyne が横取りするショートカットを転送する
 func (k *keyReceiver) TypedShortcut(s fyne.Shortcut) {
+	if k.keyDownHandled {
+		k.keyDownHandled = false
+		return
+	}
 	var key string
 	var mods []string
 

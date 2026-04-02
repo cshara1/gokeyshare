@@ -12,6 +12,7 @@ import (
 	"image/color"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/lang"
 	"fyne.io/fyne/v2/theme"
@@ -31,6 +33,9 @@ import (
 
 //go:embed translations
 var translations embed.FS
+
+// ビルド時に -ldflags "-X main.version=vX.Y.Z" で上書き可能
+var version = "dev"
 
 const writeTimeout = 10 * time.Second
 
@@ -51,6 +56,19 @@ func main() {
 
 	w := a.NewWindow("gokeyshare")
 	w.Resize(fyne.NewSize(480, 500))
+
+	w.SetMainMenu(fyne.NewMainMenu(
+		fyne.NewMenu("Help",
+			fyne.NewMenuItem("About", func() {
+				u, _ := url.Parse("https://github.com/cshara1/gokeyshare")
+				dialog.ShowCustom("About gokeyshare", "OK",
+					container.NewVBox(
+						widget.NewLabel("gokeyshare "+version+"\n\nKeyboard input forwarding tool\nover TCP/TLS."),
+						widget.NewHyperlink("GitHub", u),
+					), w)
+			}),
+		),
+	))
 
 	servers := loadServers()
 	addrEntry := widget.NewSelectEntry(servers)

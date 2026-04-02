@@ -67,7 +67,7 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: |
-          go build -o ${{ matrix.client_out }} ./gokeyshare/
+          go build -ldflags "-X main.version=${{ github.ref_name }}" -o ${{ matrix.client_out }} ./gokeyshare/
 
       - name: Build server (non-Windows)
         if: runner.os != 'Windows'
@@ -75,7 +75,7 @@ jobs:
 
       - name: Build client (non-Windows)
         if: runner.os != 'Windows'
-        run: go build -o ${{ matrix.client_out }} ./gokeyshare/
+        run: go build -ldflags "-X main.version=${{ github.ref_name }}" -o ${{ matrix.client_out }} ./gokeyshare/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

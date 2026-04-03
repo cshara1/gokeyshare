@@ -325,8 +325,16 @@ func main() {
 	// Canvas レベルのフォールバック: フォーカスが kr 以外にあるときもキーを転送
 	// 注: SetOnKeyDown/SetOnKeyUp は全キーイベントを横取りするため使用しない
 	//     （addrEntry 等の入力を妨げる）
-	w.Canvas().SetOnTypedRune(func(r rune) { kr.TypedRune(r) })
-	w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) { kr.TypedKey(ev) })
+	w.Canvas().SetOnTypedRune(func(r rune) {
+		if !kr.focused {
+			kr.TypedRune(r)
+		}
+	})
+	w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
+		if !kr.focused {
+			kr.TypedKey(ev)
+		}
+	})
 
 	// 起動時に keyReceiver にフォーカスを設定
 	w.Canvas().Focus(kr)

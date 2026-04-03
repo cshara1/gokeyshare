@@ -67,19 +67,30 @@ go build -o gokeyshare-server.exe .\gokeyshare-server\
 
 ## Usage
 
+### Using pre-built binaries
+
+Download the latest release from [Releases](https://github.com/cshara1/gokeyshare/releases) and extract the archive for your platform.
+
+Each archive contains two executables:
+
+| File | Description |
+|---|---|
+| `server` (`server.exe` on Windows) | Key event receiver — run on the target machine |
+| `client` (`client.exe` on Windows) | GUI client — run on the source machine |
+
 ### 1. Start the server (target machine)
 
 ```bash
-./gokeyshare-server :8080
+./server :8080
 ```
 
 ### 2. Start the client (source machine)
 
 ```bash
-./gokeyshare
+./client
 ```
 
-The GUI will open. Enter the server's `host:port` in the address field, click **Connect**, then click the blue area to start forwarding key input.
+The GUI will open. Enter the server's `host:port` in the address field and click **Connect**. Key input is forwarded automatically once connected.
 
 Previously used addresses are saved and available from the dropdown.
 

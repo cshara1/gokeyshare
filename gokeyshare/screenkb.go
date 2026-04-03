@@ -24,7 +24,7 @@ var (
 	skColorNormal     = color.NRGBA{R: 55, G: 55, B: 60, A: 255}
 	skColorPressed    = color.NRGBA{R: 30, G: 100, B: 200, A: 255}
 	skColorSupplement = color.NRGBA{R: 55, G: 65, B: 70, A: 255}
-	skColorText       = color.NRGBA{R: 200, G: 200, B: 210, A: 255}
+	skColorText       = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 )
 
 // --- Key definition ---

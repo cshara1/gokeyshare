@@ -17,6 +17,7 @@ var platformKeyMap = map[string]uint8{
 	"muhenkan": 0x1D, // VK_NONCONVERT
 	"henkan":   0x1C, // VK_CONVERT
 	"kana":     0x15, // VK_KANA
+	"hankaku":  0x19, // VK_KANJI (物理 半角/全角 キー)
 }
 
 func platformKeyTap(key string) bool {

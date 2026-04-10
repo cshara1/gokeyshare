@@ -71,10 +71,10 @@ func main() {
 	))
 
 	servers := loadServers()
-	addrEntry := widget.NewSelectEntry(servers)
+	addrEntry := widget.NewSelectEntry(serverAddrs(servers))
 	addrEntry.SetPlaceHolder(lang.X("addr_placeholder", "host:port"))
 	if len(servers) > 0 {
-		addrEntry.SetText(servers[0])
+		addrEntry.SetText(servers[0].Addr)
 	}
 
 	statusLabel := widget.NewLabel(lang.X("status_disconnected", "● Disconnected"))
@@ -121,17 +121,29 @@ func main() {
 		addLog(fmt.Sprintf("Key=%-12q Mods=%v", key, mods))
 	}
 
+	// 起動時のレイアウト: 直近接続サーバの保存値があればそれを優先、無ければグローバル既定
 	savedLayout := a.Preferences().StringWithFallback("keyboard_layout", "us")
+	if len(servers) > 0 && servers[0].Layout != "" {
+		savedLayout = servers[0].Layout
+	}
 	screenKb := newScreenKeyboard(savedLayout, onKey, func() { w.Canvas().Focus(kr) })
 	kr = newKeyReceiver(w, onKey)
 	kr.screenKb = screenKb
 
-	layoutSelect := widget.NewSelect(skLayoutNames(), func(name string) {
+	layoutSelect := widget.NewRadioGroup(skLayoutNames(), func(name string) {
+		if name == "" {
+			return
+		}
 		id := skLayoutIDByName(name)
 		screenKb.SetLayout(id)
 		a.Preferences().SetString("keyboard_layout", id)
+		// 接続中なら現在のサーバ履歴にレイアウトを保存
+		if lastAddr != "" {
+			servers = upsertServer(lastAddr, id, servers)
+		}
 		fyne.Do(func() { w.Canvas().Focus(kr) })
 	})
+	layoutSelect.Horizontal = true
 	layoutSelect.SetSelected(skLayoutNameByID(savedLayout))
 
 	// completeConnection はダイアル成功後の共通処理
@@ -154,20 +166,42 @@ func main() {
 			statusLabel.SetText(lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr}))
 
 			names := skLayoutNamesForPlatform(platform)
-			layoutSelect.SetOptions(names)
-			currentValid := false
-			for _, n := range names {
-				if n == layoutSelect.Selected {
-					currentValid = true
-					break
+			layoutSelect.Options = names
+			layoutSelect.Refresh()
+
+			// このサーバに保存済みのレイアウトがあれば優先、無ければプラットフォームの先頭
+			savedForServer := findServerLayout(servers, addr)
+			savedName := skLayoutNameByID(savedForServer)
+			selectName := ""
+			if savedForServer != "" {
+				for _, n := range names {
+					if n == savedName {
+						selectName = savedName
+						break
+					}
 				}
 			}
-			if !currentValid && len(names) > 0 {
-				layoutSelect.SetSelected(names[0])
+			if selectName == "" {
+				// 現在の選択がプラットフォームに合致するならそのまま、しなければ先頭
+				for _, n := range names {
+					if n == layoutSelect.Selected {
+						selectName = n
+						break
+					}
+				}
+				if selectName == "" && len(names) > 0 {
+					selectName = names[0]
+				}
+			}
+			if selectName != "" && selectName != layoutSelect.Selected {
+				layoutSelect.SetSelected(selectName)
+			} else if selectName != "" {
+				// SetSelected が変化なしのときは明示的に screenKb を更新
+				screenKb.SetLayout(skLayoutIDByName(selectName))
 			}
 
-			servers = saveServer(addr, servers)
-			addrEntry.SetOptions(servers)
+			servers = upsertServer(addr, skLayoutIDByName(selectName), servers)
+			addrEntry.SetOptions(serverAddrs(servers))
 			w.Canvas().Focus(kr)
 		})
 	}
@@ -245,7 +279,8 @@ func main() {
 			lastAddr = ""
 			connectBtn.SetText(lang.X("btn_connect", "Connect"))
 			statusLabel.SetText(lang.X("status_disconnected", "● Disconnected"))
-			layoutSelect.SetOptions(skLayoutNames())
+			layoutSelect.Options = skLayoutNames()
+		layoutSelect.Refresh()
 			return
 		}
 
@@ -279,8 +314,8 @@ func main() {
 	// --- 履歴クリアボタン ---
 	clearBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 		os.Remove(serversPath())
-		servers = []string{}
-		addrEntry.SetOptions(servers)
+		servers = []serverEntry{}
+		addrEntry.SetOptions([]string{})
 		addrEntry.SetText("")
 		fyne.Do(func() { w.Canvas().Focus(kr) })
 	})
@@ -352,7 +387,12 @@ type keyReceiver struct {
 	screenKb       *screenKeyboard
 	tabJustPressed bool
 	pendingMod     string // 単独押しの候補となっている修飾キーID（空なら候補なし）
-	keyDownHandled bool   // KeyDown で修飾キー+通常キーを送信済みフラグ
+	// skipDownstream: KeyDown で送信した直後にスキップすべき後続イベント数。
+	// fyne は同じ物理キー押下で TypedKey と TypedRune の両方を発火するため、
+	// printable キー: 2、特殊キー: 1、Tab: 0（Tab は fyne が早期 return）。
+	// 各 KeyDown でリセットし、TypedKey/TypedRune/TypedShortcut で 1 ずつ消費する。
+	// キーリピート時は KeyDown が呼ばれないため自然と 0 のまま送信される。
+	skipDownstream int
 }
 
 // standaloneModMap: 修飾キーの画面キーID → サーバーに送信するキー名
@@ -399,8 +439,9 @@ func (k *keyReceiver) FocusLost() {
 }
 
 func (k *keyReceiver) TypedRune(r rune) {
-	if k.keyDownHandled {
-		k.keyDownHandled = false
+	// KeyDown で送信済みならスキップ
+	if k.skipDownstream > 0 {
+		k.skipDownstream--
 		return
 	}
 	switch {
@@ -421,6 +462,9 @@ func (k *keyReceiver) TypedRune(r rune) {
 // KeyDown は desktop.Keyable の実装。TypedKey/TypedRune より前に呼ばれる。
 // fyne がフォーカス移動に使う Tab や、修飾キーと組み合わせた Alt+key をここで捕捉する。
 func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
+	// 新しいキー押下: 前回の skip 残数をクリア
+	k.skipDownstream = 0
+
 	if ev.Name == fyne.KeyTab {
 		k.tabJustPressed = true
 	}
@@ -445,23 +489,37 @@ func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
 
 	switch ev.Name {
 	case fyne.KeyTab:
-		// fyne のフォーカス移動より先に横取り
+		// fyne のフォーカス移動より先に横取り（fyne は Tab を早期 return するため後続なし）
 		k.onKey("tab", mods)
 	default:
 		// 修飾キー＋通常キーの組み合わせを処理
 		// Alt: TypedRune では OS 変換後の文字が届くためここで捕捉
 		// Ctrl/Super: TypedShortcut で処理されない場合のフォールバック
+		// Shift+letter: TypedRune も ("a", ["shift"]) を生成するため KeyDown で先取りしてスキップ設定
 		if len(mods) > 0 {
 			_, evIsMod := standaloneModMap[id]
 			if !evIsMod {
-				k.keyDownHandled = true
-				if key := fyneKeyMap(ev.Name); key != "" {
-					k.onKey(key, mods)
-					return
+				var key string
+				isSpecial := false
+				if mapped := fyneKeyMap(ev.Name); mapped != "" {
+					key = mapped
+					isSpecial = true
+				} else if name := string(ev.Name); len(name) == 1 {
+					key = strings.ToLower(name)
 				}
-				name := string(ev.Name)
-				if len(name) == 1 {
-					k.onKey(strings.ToLower(name), mods)
+				if key != "" {
+					k.onKey(key, mods)
+					// 印字可能キー: TypedKey と TypedRune の両方が後続するため 2 をスキップ
+					// 特殊キー: TypedKey のみのため 1 をスキップ
+					// （Ctrl/Alt/Super 修飾時は fyne が TypedShortcut にルーティングするため 1）
+					if isSpecial {
+						k.skipDownstream = 1
+					} else {
+						// Shift+printable: TypedKey + TypedRune
+						// Ctrl/Alt/Super+printable: TypedShortcut のみ（多くの場合）
+						// 安全側で 2 を設定し、TypedShortcut でも消費可能にする
+						k.skipDownstream = 2
+					}
 				}
 				return
 			}
@@ -482,8 +540,8 @@ func (k *keyReceiver) KeyUp(ev *fyne.KeyEvent) {
 }
 
 func (k *keyReceiver) TypedKey(ev *fyne.KeyEvent) {
-	if k.keyDownHandled {
-		k.keyDownHandled = false
+	if k.skipDownstream > 0 {
+		k.skipDownstream--
 		return
 	}
 	mods := currentMods(k.win)
@@ -500,8 +558,8 @@ func (k *keyReceiver) TypedKey(ev *fyne.KeyEvent) {
 
 // TypedShortcut は Ctrl+C/V/Z など fyne が横取りするショートカットを転送する
 func (k *keyReceiver) TypedShortcut(s fyne.Shortcut) {
-	if k.keyDownHandled {
-		k.keyDownHandled = false
+	if k.skipDownstream > 0 {
+		k.skipDownstream = 0 // ショートカット経路では後続イベントなし
 		return
 	}
 	var key string
@@ -589,6 +647,12 @@ func fyneKeyMap(name fyne.KeyName) string {
 
 const maxServers = 10
 
+// serverEntry は履歴1件分。Layout は最後にこのサーバで選択したキーボードレイアウト ID。
+type serverEntry struct {
+	Addr   string `json:"addr"`
+	Layout string `json:"layout,omitempty"`
+}
+
 func serversPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -597,40 +661,76 @@ func serversPath() string {
 	return filepath.Join(dir, "gokeyshare", "servers.json")
 }
 
-func loadServers() []string {
+// loadServers は履歴を読み込む。旧形式（[]string）も後方互換でサポート。
+func loadServers() []serverEntry {
 	data, err := os.ReadFile(serversPath())
 	if err != nil {
-		return []string{}
+		return []serverEntry{}
 	}
-	var servers []string
-	if err := json.Unmarshal(data, &servers); err != nil {
-		return []string{}
+	// 新形式: [{addr, layout}, ...]
+	var entries []serverEntry
+	if err := json.Unmarshal(data, &entries); err == nil && len(entries) > 0 && entries[0].Addr != "" {
+		return entries
 	}
-	return servers
+	// 旧形式: ["addr1", "addr2", ...]
+	var addrs []string
+	if err := json.Unmarshal(data, &addrs); err == nil {
+		out := make([]serverEntry, 0, len(addrs))
+		for _, a := range addrs {
+			if a != "" {
+				out = append(out, serverEntry{Addr: a})
+			}
+		}
+		return out
+	}
+	return []serverEntry{}
 }
 
-// saveServer は addr を先頭に追加し、重複排除・上限適用して保存する。
-// 更新後のリストを返す。
-func saveServer(addr string, current []string) []string {
-	// 重複を除いた新リストを作成（addr を先頭に）
-	seen := map[string]bool{addr: true}
-	next := []string{addr}
-	for _, s := range current {
-		if !seen[s] {
-			seen[s] = true
-			next = append(next, s)
+// serverAddrs はアドレスのみのスライスを返す（UI 用）
+func serverAddrs(entries []serverEntry) []string {
+	addrs := make([]string, len(entries))
+	for i, e := range entries {
+		addrs[i] = e.Addr
+	}
+	return addrs
+}
+
+// findServerLayout は addr に対する保存済みレイアウト ID を返す（無ければ空）
+func findServerLayout(entries []serverEntry, addr string) string {
+	for _, e := range entries {
+		if e.Addr == addr {
+			return e.Layout
+		}
+	}
+	return ""
+}
+
+// upsertServer は addr を先頭に追加（または昇格）し、重複排除・上限適用する。
+// layout が空でなければそのレイアウトを保存する。空の場合は既存のレイアウトを保持。
+func upsertServer(addr, layout string, current []serverEntry) []serverEntry {
+	existingLayout := findServerLayout(current, addr)
+	if layout == "" {
+		layout = existingLayout
+	}
+	next := []serverEntry{{Addr: addr, Layout: layout}}
+	for _, e := range current {
+		if e.Addr != addr {
+			next = append(next, e)
 		}
 	}
 	if len(next) > maxServers {
 		next = next[:maxServers]
 	}
+	persistServers(next)
+	return next
+}
 
+func persistServers(entries []serverEntry) {
 	path := serversPath()
 	os.MkdirAll(filepath.Dir(path), 0755)
-	if data, err := json.Marshal(next); err == nil {
+	if data, err := json.Marshal(entries); err == nil {
 		os.WriteFile(path, data, 0644)
 	}
-	return next
 }
 
 // --- platform query ---

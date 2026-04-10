@@ -34,6 +34,7 @@ var platformKeyMap = map[string]C.ulong{
 	"kana":     0xff27, // XK_Hiragana_Katakana
 	"eisu":     0xff30, // XK_Eisu_toggle
 	"kana_mac": 0xff27, // XK_Hiragana_Katakana (same as kana)
+	"hankaku":  0xff2a, // XK_Zenkaku_Hankaku
 }
 
 func platformKeyTap(key string) bool {

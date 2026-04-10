@@ -57,6 +57,15 @@ var (
 		skK("F5", "f5", 1), skK("F6", "f6", 1), skK("F7", "f7", 1), skK("F8", "f8", 1), skSpacer(0.5),
 		skK("F9", "f9", 1), skK("F10", "f10", 1), skK("F11", "f11", 1), skK("F12", "f12", 1),
 	}
+	// JIS Windows 用: Fn 行末尾に PrtSc キー（手動押下用の Supplement キー）
+	skFnRowJISWin = []skKeyDef{
+		skK("Esc", "escape", 1.5), skSpacer(0.5),
+		skK("F1", "f1", 1), skK("F2", "f2", 1), skK("F3", "f3", 1), skK("F4", "f4", 1), skSpacer(0.5),
+		skK("F5", "f5", 1), skK("F6", "f6", 1), skK("F7", "f7", 1), skK("F8", "f8", 1), skSpacer(0.5),
+		skK("F9", "f9", 1), skK("F10", "f10", 1), skK("F11", "f11", 1), skK("F12", "f12", 1),
+		skSpacer(0.5),
+		skSup("PrtSc", "print", 1.25),
+	}
 	skQwertyRow = []skKeyDef{
 		skK("Tab", "tab", 1.5),
 		skK("Q", "q", 1), skK("W", "w", 1), skK("E", "e", 1), skK("R", "r", 1), skK("T", "t", 1),
@@ -88,6 +97,7 @@ var (
 type skLayoutDef struct {
 	ID      string
 	Name    string
+	FnRow   []skKeyDef // 空なら共通の skFnRow を使う
 	NumRow  []skKeyDef
 	Bottom  []skKeyDef
 	Aliases map[string]string // fyneNameToScreenID の結果 → 実際の画面キーID
@@ -126,6 +136,7 @@ var skLayoutDefs = []skLayoutDef{
 	{
 		ID:     "jis_win",
 		Name:   "JIS (Windows)",
+		FnRow:  skFnRowJISWin,
 		NumRow: skNumRowJISWin,
 		Bottom: []skKeyDef{
 			skK("Ctrl", "lctrl", 1.25), skSup("Win", "lwin", 1), skK("Alt", "lalt", 1),
@@ -232,8 +243,12 @@ func skFindLayout(id string) *skLayoutDef {
 }
 
 func skBuildAllRows(layout *skLayoutDef) [][]skKeyDef {
+	fnRow := layout.FnRow
+	if fnRow == nil {
+		fnRow = skFnRow
+	}
 	return [][]skKeyDef{
-		skFnRow,
+		fnRow,
 		layout.NumRow,
 		skQwertyRow,
 		skHomeRow,

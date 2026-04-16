@@ -40,14 +40,15 @@ var version = "dev"
 const writeTimeout = 10 * time.Second
 
 var (
-	connMu    sync.Mutex
-	conn      net.Conn
-	builderMu sync.Mutex
-	builder   = flatbuffers.NewBuilder(256)
+	connMu         sync.Mutex
+	conn           net.Conn
+	builderMu      sync.Mutex
+	builder        = flatbuffers.NewBuilder(256)
+	remotePlatform string // サーバ側の runtime.GOOS（"windows", "linux", "darwin" 等）
 )
 
 func main() {
-	a := app.New()
+	a := app.NewWithID("com.github.gokeyshare")
 
 	// app.New() 後に登録することで、ロケール検出後にローカライザーへ確実に反映される
 	if err := lang.AddTranslationsFS(translations, "translations"); err != nil {
@@ -156,6 +157,7 @@ func main() {
 
 		sendBuffer(newConn, buildPlatformQuery())
 		platform := readPlatformInfo(newConn)
+		remotePlatform = platform
 
 		fyne.Do(func() {
 			connMu.Lock()
@@ -277,6 +279,7 @@ func main() {
 			conn = nil
 			connMu.Unlock()
 			lastAddr = ""
+			remotePlatform = ""
 			connectBtn.SetText(lang.X("btn_connect", "Connect"))
 			statusLabel.SetText(lang.X("status_disconnected", "● Disconnected"))
 			layoutSelect.Options = skLayoutNames()
@@ -371,8 +374,10 @@ func main() {
 		}
 	})
 
-	// 起動時に keyReceiver にフォーカスを設定
-	w.Canvas().Focus(kr)
+	// 起動時に keyReceiver にフォーカスを設定（レンダリング完了後に実行）
+	fyne.Do(func() {
+		w.Canvas().Focus(kr)
+	})
 
 	w.ShowAndRun()
 }
@@ -386,6 +391,7 @@ type keyReceiver struct {
 	focused        bool
 	screenKb       *screenKeyboard
 	tabJustPressed bool
+	imeReacquire   bool   // IME切り替えキーによるフォーカス喪失時に再取得するフラグ
 	pendingMod     string // 単独押しの候補となっている修飾キーID（空なら候補なし）
 	// skipDownstream: KeyDown で送信した直後にスキップすべき後続イベント数。
 	// fyne は同じ物理キー押下で TypedKey と TypedRune の両方を発火するため、
@@ -422,8 +428,9 @@ func (k *keyReceiver) Tapped(_ *fyne.PointEvent) {
 
 func (k *keyReceiver) FocusGained() { k.focused = true; k.Refresh() }
 func (k *keyReceiver) FocusLost() {
-	reacquire := k.tabJustPressed
+	reacquire := k.tabJustPressed || k.imeReacquire
 	k.tabJustPressed = false
+	k.imeReacquire = false
 	k.pendingMod = ""
 	k.focused = false
 	k.Refresh()
@@ -474,6 +481,15 @@ func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
 		k.screenKb.SetPressed(id, true)
 	}
 
+	// IME切り替えキー: CapsLock → サーバがWindowsなら hankaku を送信し、フォーカス再取得
+	if id == "capslock" {
+		k.imeReacquire = true
+		if remotePlatform == "windows" {
+			k.onKey("hankaku", nil)
+		}
+		return
+	}
+
 	// 修飾キー単独送信の追跡: 修飾キーなら候補に、それ以外ならクリア
 	if _, isMod := standaloneModMap[id]; isMod {
 		if k.pendingMod == "" {
@@ -492,38 +508,32 @@ func (k *keyReceiver) KeyDown(ev *fyne.KeyEvent) {
 		// fyne のフォーカス移動より先に横取り（fyne は Tab を早期 return するため後続なし）
 		k.onKey("tab", mods)
 	default:
-		// 修飾キー＋通常キーの組み合わせを処理
-		// Alt: TypedRune では OS 変換後の文字が届くためここで捕捉
-		// Ctrl/Super: TypedShortcut で処理されない場合のフォールバック
-		// Shift+letter: TypedRune も ("a", ["shift"]) を生成するため KeyDown で先取りしてスキップ設定
-		if len(mods) > 0 {
-			_, evIsMod := standaloneModMap[id]
-			if !evIsMod {
-				var key string
-				isSpecial := false
-				if mapped := fyneKeyMap(ev.Name); mapped != "" {
-					key = mapped
-					isSpecial = true
-				} else if name := string(ev.Name); len(name) == 1 {
-					key = strings.ToLower(name)
-				}
-				if key != "" {
-					k.onKey(key, mods)
-					// 印字可能キー: TypedKey と TypedRune の両方が後続するため 2 をスキップ
-					// 特殊キー: TypedKey のみのため 1 をスキップ
-					// （Ctrl/Alt/Super 修飾時は fyne が TypedShortcut にルーティングするため 1）
-					if isSpecial {
-						k.skipDownstream = 1
-					} else {
-						// Shift+printable: TypedKey + TypedRune
-						// Ctrl/Alt/Super+printable: TypedShortcut のみ（多くの場合）
-						// 安全側で 2 を設定し、TypedShortcut でも消費可能にする
-						k.skipDownstream = 2
-					}
-				}
-				return
+		_, evIsMod := standaloneModMap[id]
+		if evIsMod {
+			// 修飾キー単独は KeyUp で処理
+			return
+		}
+
+		var key string
+		isSpecial := false
+		if mapped := fyneKeyMap(ev.Name); mapped != "" {
+			key = mapped
+			isSpecial = true
+		} else if name := string(ev.Name); len(name) == 1 {
+			key = strings.ToLower(name)
+		}
+		if key != "" {
+			k.onKey(key, mods)
+			// 印字可能キー: TypedKey と TypedRune の両方が後続するため 2 をスキップ
+			// 特殊キー: TypedKey のみのため 1 をスキップ
+			// （Ctrl/Alt/Super 修飾時は fyne が TypedShortcut にルーティングするため 1）
+			if isSpecial && key != "space" {
+				k.skipDownstream = 1
+			} else {
+				k.skipDownstream = 2
 			}
 		}
+		return
 	}
 }
 
@@ -615,7 +625,7 @@ func fyneKeyMap(name fyne.KeyName) string {
 	case fyne.KeyDelete:    return "delete"
 	case fyne.KeyEscape:    return "escape"
 	case fyne.KeyTab:  return "tab"
-	// KeySpace は TypedRune で処理するためここでは除外
+	case fyne.KeySpace: return "space"
 	case fyne.KeyUp:   return "up"
 	case fyne.KeyDown:      return "down"
 	case fyne.KeyLeft:      return "left"

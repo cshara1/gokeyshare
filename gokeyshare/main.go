@@ -379,6 +379,29 @@ func main() {
 		w.Canvas().Focus(kr)
 	})
 
+	// ウィンドウがアクティブになったとき接続の生存確認を行う
+	a.Lifecycle().SetOnEnteredForeground(func() {
+		connMu.Lock()
+		c := conn
+		connMu.Unlock()
+		if c == nil {
+			return
+		}
+		go func() {
+			if !pingCheck(c) {
+				c.Close()
+				connMu.Lock()
+				conn = nil
+				connMu.Unlock()
+				if lastAddr != "" {
+					fyne.Do(func() {
+						startConnect(lastAddr)
+					})
+				}
+			}
+		}()
+	})
+
 	w.ShowAndRun()
 }
 
@@ -791,6 +814,44 @@ func readPlatformInfo(c net.Conn) string {
 	ke := new(InputShare.KeyEvent)
 	event.KeyEvent(ke)
 	return string(ke.Key())
+}
+
+// --- ping/pong ---
+
+func buildPing() []byte {
+	builderMu.Lock()
+	defer builderMu.Unlock()
+
+	builder.Reset()
+	InputShare.EventStart(builder)
+	InputShare.EventAddEventType(builder, InputShare.EventTypePing)
+	ev := InputShare.EventEnd(builder)
+	builder.Finish(ev)
+	return builder.FinishedBytes()
+}
+
+// pingCheck は Ping を送信し Pong 応答を待つ。成功なら true、失敗なら false。
+func pingCheck(c net.Conn) bool {
+	if err := sendBuffer(c, buildPing()); err != nil {
+		return false
+	}
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	defer c.SetReadDeadline(time.Time{})
+
+	sizeBuf := make([]byte, 4)
+	if _, err := io.ReadFull(c, sizeBuf); err != nil {
+		return false
+	}
+	msgSize := binary.LittleEndian.Uint32(sizeBuf)
+	if msgSize == 0 || msgSize > 1024 {
+		return false
+	}
+	msgBuf := make([]byte, msgSize)
+	if _, err := io.ReadFull(c, msgBuf); err != nil {
+		return false
+	}
+	event := InputShare.GetRootAsEvent(msgBuf, 0)
+	return event.EventType() == InputShare.EventTypePong
 }
 
 // --- clipboard ---

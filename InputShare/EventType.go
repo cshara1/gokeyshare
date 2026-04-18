@@ -12,6 +12,8 @@ const (
 	EventTypeClipboard      EventType = 2
 	EventTypePlatformQuery  EventType = 3
 	EventTypePlatformInfo   EventType = 4
+	EventTypePing           EventType = 5
+	EventTypePong           EventType = 6
 )
 
 var EnumNamesEventType = map[EventType]string{
@@ -20,6 +22,8 @@ var EnumNamesEventType = map[EventType]string{
 	EventTypeClipboard:      "Clipboard",
 	EventTypePlatformQuery:  "PlatformQuery",
 	EventTypePlatformInfo:   "PlatformInfo",
+	EventTypePing:           "Ping",
+	EventTypePong:           "Pong",
 }
 
 var EnumValuesEventType = map[string]EventType{
@@ -28,6 +32,8 @@ var EnumValuesEventType = map[string]EventType{
 	"Clipboard":      EventTypeClipboard,
 	"PlatformQuery":  EventTypePlatformQuery,
 	"PlatformInfo":   EventTypePlatformInfo,
+	"Ping":           EventTypePing,
+	"Pong":           EventTypePong,
 }
 
 func (v EventType) String() string {

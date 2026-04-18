@@ -142,6 +142,11 @@ func dispatchEvent(msgBuf []byte, conn net.Conn) {
 		return
 	}
 
+	if event.EventType() == InputShare.EventTypePing {
+		sendPong(conn)
+		return
+	}
+
 	keyEvent := new(InputShare.KeyEvent)
 	event.KeyEvent(keyEvent)
 
@@ -225,4 +230,22 @@ func sendPlatformInfo(conn net.Conn) {
 	conn.SetWriteDeadline(time.Time{})
 
 	log.Printf("プラットフォーム情報を送信: %s", runtime.GOOS)
+}
+
+func sendPong(conn net.Conn) {
+	b := flatbuffers.NewBuilder(32)
+
+	InputShare.EventStart(b)
+	InputShare.EventAddEventType(b, InputShare.EventTypePong)
+	ev := InputShare.EventEnd(b)
+	b.Finish(ev)
+
+	buf := b.FinishedBytes()
+	sizeBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(sizeBuf, uint32(len(buf)))
+
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.Write(sizeBuf)
+	conn.Write(buf)
+	conn.SetWriteDeadline(time.Time{})
 }

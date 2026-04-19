@@ -66,14 +66,46 @@ func (rcv *Event) KeyEvent(obj *KeyEvent) *KeyEvent {
 	return nil
 }
 
+func (rcv *Event) MouseEvent(obj *MouseEvent) *MouseEvent {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		x := rcv._tab.Indirect(o + rcv._tab.Pos)
+		if obj == nil {
+			obj = new(MouseEvent)
+		}
+		obj.Init(rcv._tab.Bytes, x)
+		return obj
+	}
+	return nil
+}
+
+func (rcv *Event) ScreenInfo(obj *ScreenInfo) *ScreenInfo {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
+	if o != 0 {
+		x := rcv._tab.Indirect(o + rcv._tab.Pos)
+		if obj == nil {
+			obj = new(ScreenInfo)
+		}
+		obj.Init(rcv._tab.Bytes, x)
+		return obj
+	}
+	return nil
+}
+
 func EventStart(builder *flatbuffers.Builder) {
-	builder.StartObject(2)
+	builder.StartObject(4)
 }
 func EventAddEventType(builder *flatbuffers.Builder, eventType EventType) {
 	builder.PrependInt8Slot(0, int8(eventType), 0)
 }
 func EventAddKeyEvent(builder *flatbuffers.Builder, keyEvent flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(keyEvent), 0)
+}
+func EventAddMouseEvent(builder *flatbuffers.Builder, mouseEvent flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(2, flatbuffers.UOffsetT(mouseEvent), 0)
+}
+func EventAddScreenInfo(builder *flatbuffers.Builder, screenInfo flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(3, flatbuffers.UOffsetT(screenInfo), 0)
 }
 func EventEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

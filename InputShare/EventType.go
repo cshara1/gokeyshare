@@ -7,33 +7,54 @@ import "strconv"
 type EventType int8
 
 const (
-	EventTypeKeyDown        EventType = 0
-	EventTypeKeyUp          EventType = 1
-	EventTypeClipboard      EventType = 2
-	EventTypePlatformQuery  EventType = 3
-	EventTypePlatformInfo   EventType = 4
-	EventTypePing           EventType = 5
-	EventTypePong           EventType = 6
+	EventTypeKeyDown         EventType = 0
+	EventTypeKeyUp           EventType = 1
+	EventTypeClipboard       EventType = 2
+	EventTypePlatformQuery   EventType = 3
+	EventTypePlatformInfo    EventType = 4
+	EventTypePing            EventType = 5
+	EventTypePong            EventType = 6
+	EventTypeMouseMove       EventType = 7
+	EventTypeMouseDown       EventType = 8
+	EventTypeMouseUp         EventType = 9
+	EventTypeMouseScroll     EventType = 10
+	EventTypeScreenInfoQuery EventType = 11
+	EventTypeScreenInfoReply EventType = 12
+	EventTypeClipboardSync   EventType = 13
 )
 
 var EnumNamesEventType = map[EventType]string{
-	EventTypeKeyDown:        "KeyDown",
-	EventTypeKeyUp:          "KeyUp",
-	EventTypeClipboard:      "Clipboard",
-	EventTypePlatformQuery:  "PlatformQuery",
-	EventTypePlatformInfo:   "PlatformInfo",
-	EventTypePing:           "Ping",
-	EventTypePong:           "Pong",
+	EventTypeKeyDown:         "KeyDown",
+	EventTypeKeyUp:           "KeyUp",
+	EventTypeClipboard:       "Clipboard",
+	EventTypePlatformQuery:   "PlatformQuery",
+	EventTypePlatformInfo:    "PlatformInfo",
+	EventTypePing:            "Ping",
+	EventTypePong:            "Pong",
+	EventTypeMouseMove:       "MouseMove",
+	EventTypeMouseDown:       "MouseDown",
+	EventTypeMouseUp:         "MouseUp",
+	EventTypeMouseScroll:     "MouseScroll",
+	EventTypeScreenInfoQuery: "ScreenInfoQuery",
+	EventTypeScreenInfoReply: "ScreenInfoReply",
+	EventTypeClipboardSync:   "ClipboardSync",
 }
 
 var EnumValuesEventType = map[string]EventType{
-	"KeyDown":        EventTypeKeyDown,
-	"KeyUp":          EventTypeKeyUp,
-	"Clipboard":      EventTypeClipboard,
-	"PlatformQuery":  EventTypePlatformQuery,
-	"PlatformInfo":   EventTypePlatformInfo,
-	"Ping":           EventTypePing,
-	"Pong":           EventTypePong,
+	"KeyDown":         EventTypeKeyDown,
+	"KeyUp":           EventTypeKeyUp,
+	"Clipboard":       EventTypeClipboard,
+	"PlatformQuery":   EventTypePlatformQuery,
+	"PlatformInfo":    EventTypePlatformInfo,
+	"Ping":            EventTypePing,
+	"Pong":            EventTypePong,
+	"MouseMove":       EventTypeMouseMove,
+	"MouseDown":       EventTypeMouseDown,
+	"MouseUp":         EventTypeMouseUp,
+	"MouseScroll":     EventTypeMouseScroll,
+	"ScreenInfoQuery": EventTypeScreenInfoQuery,
+	"ScreenInfoReply": EventTypeScreenInfoReply,
+	"ClipboardSync":   EventTypeClipboardSync,
 }
 
 func (v EventType) String() string {

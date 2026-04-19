@@ -2,19 +2,53 @@ namespace InputShare;
 
 enum EventType : byte {
   KeyDown,
-  KeyUp
+  KeyUp,
+  Clipboard,
+  PlatformQuery,
+  PlatformInfo,
+  Ping,
+  Pong,
+  MouseMove,
+  MouseDown,
+  MouseUp,
+  MouseScroll,
+  ScreenInfoQuery,
+  ScreenInfoReply,
+  ClipboardSync
+}
+
+enum MouseButton : byte {
+  Left,
+  Right,
+  Middle
 }
 
 table KeyEvent {
-  // `key_char`から`key`に名前を変更し、主キーであることを明確化
-  key: string; 
-  // 変更点: 修飾キーのリスト（"alt", "ctrl"など）を格納
-  modifiers: [string]; 
+  key: string;
+  modifiers: [string];
+}
+
+table MouseEvent {
+  x: int32;
+  y: int32;
+  button: MouseButton;
+  is_relative: bool;
+  scroll_dx: int32;
+  scroll_dy: int32;
+}
+
+table ScreenInfo {
+  width: int32;
+  height: int32;
+  scale_factor: float32;
+  platform: string;
 }
 
 table Event {
   event_type: EventType;
   key_event: KeyEvent;
+  mouse_event: MouseEvent;
+  screen_info: ScreenInfo;
 }
 
 root_type Event;

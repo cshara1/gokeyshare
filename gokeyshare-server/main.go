@@ -80,9 +80,11 @@ func handleConnection(conn net.Conn, secret string) {
 	defer conn.Close()
 
 	// TCP keepalive を有効化して dead connection を検出する
+	// TCP_NODELAY を有効化してマウスイベントの遅延を低減
 	if tc, ok := conn.(*net.TCPConn); ok {
 		tc.SetKeepAlive(true)
 		tc.SetKeepAlivePeriod(30 * time.Second)
+		tc.SetNoDelay(true)
 	}
 
 	if secret != "" {
@@ -147,8 +149,60 @@ func dispatchEvent(msgBuf []byte, conn net.Conn) {
 		return
 	}
 
+	if event.EventType() == InputShare.EventTypeScreenInfoQuery {
+		sendScreenInfo(conn)
+		return
+	}
+
+	// マウスイベント処理
+	switch event.EventType() {
+	case InputShare.EventTypeMouseMove:
+		me := new(InputShare.MouseEvent)
+		if event.MouseEvent(me) == nil {
+			return
+		}
+		if me.IsRelative() {
+			robotgo.MoveRelative(int(me.X()), int(me.Y()))
+		} else {
+			robotgo.Move(int(me.X()), int(me.Y()))
+		}
+		return
+	case InputShare.EventTypeMouseDown:
+		me := new(InputShare.MouseEvent)
+		if event.MouseEvent(me) == nil {
+			return
+		}
+		robotgo.Toggle("down", mouseButtonStr(me.Button()))
+		log.Printf("マウスボタン押下: %s", mouseButtonStr(me.Button()))
+		return
+	case InputShare.EventTypeMouseUp:
+		me := new(InputShare.MouseEvent)
+		if event.MouseEvent(me) == nil {
+			return
+		}
+		robotgo.Toggle("up", mouseButtonStr(me.Button()))
+		log.Printf("マウスボタン解放: %s", mouseButtonStr(me.Button()))
+		return
+	case InputShare.EventTypeMouseScroll:
+		me := new(InputShare.MouseEvent)
+		if event.MouseEvent(me) == nil {
+			return
+		}
+		robotgo.Scroll(int(me.ScrollDx()), int(me.ScrollDy()))
+		log.Printf("スクロール: dx=%d, dy=%d", me.ScrollDx(), me.ScrollDy())
+		return
+	}
+
 	keyEvent := new(InputShare.KeyEvent)
 	event.KeyEvent(keyEvent)
+
+	// 不明なイベントタイプはスキップ
+	if event.EventType() != InputShare.EventTypeKeyDown &&
+		event.EventType() != InputShare.EventTypeKeyUp &&
+		event.EventType() != InputShare.EventTypeClipboard {
+		log.Printf("不明なイベントタイプ: %d", event.EventType())
+		return
+	}
 
 	// クリップボードイベント: key フィールドにテキストが入っている
 	if event.EventType() == InputShare.EventTypeClipboard {
@@ -230,6 +284,49 @@ func sendPlatformInfo(conn net.Conn) {
 	conn.SetWriteDeadline(time.Time{})
 
 	log.Printf("プラットフォーム情報を送信: %s", runtime.GOOS)
+}
+
+func mouseButtonStr(b InputShare.MouseButton) string {
+	switch b {
+	case InputShare.MouseButtonRight:
+		return "right"
+	case InputShare.MouseButtonMiddle:
+		return "center"
+	default:
+		return "left"
+	}
+}
+
+func sendScreenInfo(conn net.Conn) {
+	sx, sy := robotgo.GetScreenSize()
+	scale := robotgo.ScaleF()
+
+	b := flatbuffers.NewBuilder(128)
+
+	platformStr := b.CreateString(runtime.GOOS)
+	InputShare.ScreenInfoStart(b)
+	InputShare.ScreenInfoAddWidth(b, int32(sx))
+	InputShare.ScreenInfoAddHeight(b, int32(sy))
+	InputShare.ScreenInfoAddScaleFactor(b, float32(scale))
+	InputShare.ScreenInfoAddPlatform(b, platformStr)
+	si := InputShare.ScreenInfoEnd(b)
+
+	InputShare.EventStart(b)
+	InputShare.EventAddEventType(b, InputShare.EventTypeScreenInfoReply)
+	InputShare.EventAddScreenInfo(b, si)
+	ev := InputShare.EventEnd(b)
+	b.Finish(ev)
+
+	buf := b.FinishedBytes()
+	sizeBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(sizeBuf, uint32(len(buf)))
+
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.Write(sizeBuf)
+	conn.Write(buf)
+	conn.SetWriteDeadline(time.Time{})
+
+	log.Printf("画面情報を送信: %dx%d, scale=%.1f, platform=%s", sx, sy, scale, runtime.GOOS)
 }
 
 func sendPong(conn net.Conn) {

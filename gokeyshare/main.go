@@ -97,10 +97,23 @@ func main() {
 	var connectBtn *widget.Button
 	var kr *keyReceiver
 	var retryCancel context.CancelFunc
-	var lastAddr string          // 最後に接続したアドレス（自動再接続用）
-	var startConnect func(string) // 前方宣言（onKey から参照するため）
+	var lastAddr string             // 最後に接続したアドレス（自動再接続用）
+	var startConnect func(string)   // 前方宣言（onKey から参照するため）
+	var fwd *Forwarder              // シームレス転送
+	var seamlessToggle *widget.Check // 前方宣言（切断処理から参照するため）
 
 	onKey := func(key string, mods []string) {
+		// Scroll Lock で転送終了（シームレスモード中のみ）
+		if key == "escape" && fwd != nil && fwd.IsForwarding() {
+			fwd.ExitForwarding()
+			fyne.Do(func() {
+				if seamlessToggle != nil {
+					seamlessToggle.SetChecked(false)
+				}
+			})
+			return
+		}
+
 		connMu.Lock()
 		c := conn
 		connMu.Unlock()
@@ -130,6 +143,18 @@ func main() {
 	screenKb := newScreenKeyboard(savedLayout, onKey, func() { w.Canvas().Focus(kr) })
 	kr = newKeyReceiver(w, onKey)
 	kr.screenKb = screenKb
+
+	// シームレス転送の状態ラベル
+	seamlessStatus := widget.NewLabel("")
+	fwd = NewForwarder(onKey, func(forwarding bool) {
+		fyne.Do(func() {
+			if forwarding {
+				seamlessStatus.SetText(lang.X("seamless_active", "⇄ Forwarding"))
+			} else {
+				seamlessStatus.SetText("")
+			}
+		})
+	})
 
 	layoutSelect := widget.NewRadioGroup(skLayoutNames(), func(name string) {
 		if name == "" {
@@ -165,6 +190,7 @@ func main() {
 		remoteScreenW = sw
 		remoteScreenH = sh
 		remoteScaleFactor = sf
+		fwd.SetRemoteScreen(sw, sh)
 
 		fyne.Do(func() {
 			connMu.Lock()
@@ -294,6 +320,9 @@ func main() {
 			remoteScreenW = 0
 			remoteScreenH = 0
 			remoteScaleFactor = 0
+			fwd.ExitForwarding()
+			fwd.Stop()
+			seamlessToggle.SetChecked(false)
 			connectBtn.SetText(lang.X("btn_connect", "Connect"))
 			statusLabel.SetText(lang.X("status_disconnected", "● Disconnected"))
 			layoutSelect.Options = skLayoutNames()
@@ -306,6 +335,31 @@ func main() {
 
 	mouseToggle := widget.NewCheck(lang.X("btn_mouse", "Mouse"), func(on bool) {
 		mouseEnabled = on
+		fyne.Do(func() { w.Canvas().Focus(kr) })
+	})
+
+	edgeSelect := widget.NewSelect(
+		[]string{"Right", "Left", "Top", "Bottom"},
+		func(name string) {
+			fwd.SetEdge(EdgeFromName(name))
+			fyne.Do(func() { w.Canvas().Focus(kr) })
+		},
+	)
+	edgeSelect.SetSelected("Right")
+
+	seamlessToggle = widget.NewCheck(lang.X("btn_seamless", "Seamless"), func(on bool) {
+		if on {
+			fwd.SetRemoteScreen(remoteScreenW, remoteScreenH)
+			if err := fwd.Start(); err != nil {
+				fyne.Do(func() {
+					statusLabel.SetText(lang.X("status_error", "● Error: {{.Err}}", map[string]any{"Err": err.Error()}))
+				})
+				return
+			}
+		} else {
+			fwd.ExitForwarding()
+			fwd.Stop()
+		}
 		fyne.Do(func() { w.Canvas().Focus(kr) })
 	})
 
@@ -366,7 +420,7 @@ func main() {
 		container.NewHBox(clearBtn, connectBtn), addrEntry)
 
 	bottomButtons := container.NewBorder(nil, nil, nil,
-		logToggle, container.NewHBox(mouseToggle, pasteBtn))
+		logToggle, container.NewHBox(mouseToggle, seamlessToggle, edgeSelect, pasteBtn))
 
 	// krOverlay: keyReceiver をスクリーンキーボードの上に重ねて
 	// マウスイベントを捕捉できるようにする（Stackで透明オーバーレイ）
@@ -377,7 +431,7 @@ func main() {
 
 	w.SetContent(container.NewBorder(
 		topBar,       // top
-		container.NewVBox(logContainer, statusLabel), // bottom
+		container.NewVBox(logContainer, container.NewHBox(statusLabel, seamlessStatus)), // bottom
 		nil, nil,
 		center, // center expands
 	))

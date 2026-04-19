@@ -13,5 +13,7 @@
     "btn_log_show": "ログ ▼",
     "btn_log_hide": "ログ ▲",
     "status_retrying": "● 再接続中... ({{.Sec}}秒後)",
-    "btn_mouse": "マウス"
+    "btn_mouse": "マウス",
+    "btn_seamless": "シームレス",
+    "seamless_active": "⇄ 転送中"
 }

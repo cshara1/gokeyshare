@@ -13,5 +13,7 @@
     "btn_log_show": "Log ▼",
     "btn_log_hide": "Log ▲",
     "status_retrying": "● Retrying in {{.Sec}}s...",
-    "btn_mouse": "Mouse"
+    "btn_mouse": "Mouse",
+    "btn_seamless": "Seamless",
+    "seamless_active": "⇄ Forwarding"
 }

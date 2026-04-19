@@ -159,13 +159,24 @@ func main() {
 		platform := readPlatformInfo(newConn)
 		remotePlatform = platform
 
+		// リモート画面情報を取得
+		sendBuffer(newConn, buildScreenInfoQuery())
+		sw, sh, sf := readScreenInfo(newConn)
+		remoteScreenW = sw
+		remoteScreenH = sh
+		remoteScaleFactor = sf
+
 		fyne.Do(func() {
 			connMu.Lock()
 			conn = newConn
 			connMu.Unlock()
 			lastAddr = addr
 			connectBtn.SetText(lang.X("btn_disconnect", "Disconnect"))
-			statusLabel.SetText(lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr}))
+			connStatus := lang.X("status_connected", "● Connected: {{.Addr}}", map[string]any{"Addr": addr})
+			if remoteScreenW > 0 && remoteScreenH > 0 {
+				connStatus += fmt.Sprintf("  [%dx%d]", remoteScreenW, remoteScreenH)
+			}
+			statusLabel.SetText(connStatus)
 
 			names := skLayoutNamesForPlatform(platform)
 			layoutSelect.Options = names
@@ -280,6 +291,9 @@ func main() {
 			connMu.Unlock()
 			lastAddr = ""
 			remotePlatform = ""
+			remoteScreenW = 0
+			remoteScreenH = 0
+			remoteScaleFactor = 0
 			connectBtn.SetText(lang.X("btn_connect", "Connect"))
 			statusLabel.SetText(lang.X("status_disconnected", "● Disconnected"))
 			layoutSelect.Options = skLayoutNames()
@@ -288,6 +302,11 @@ func main() {
 		}
 
 		startConnect(addrEntry.Text)
+	})
+
+	mouseToggle := widget.NewCheck(lang.X("btn_mouse", "Mouse"), func(on bool) {
+		mouseEnabled = on
+		fyne.Do(func() { w.Canvas().Focus(kr) })
 	})
 
 	pasteBtn := widget.NewButton(lang.X("btn_paste", "Paste to remote"), func() {
@@ -347,14 +366,18 @@ func main() {
 		container.NewHBox(clearBtn, connectBtn), addrEntry)
 
 	bottomButtons := container.NewBorder(nil, nil, nil,
-		logToggle, pasteBtn)
+		logToggle, container.NewHBox(mouseToggle, pasteBtn))
+
+	// krOverlay: keyReceiver をスクリーンキーボードの上に重ねて
+	// マウスイベントを捕捉できるようにする（Stackで透明オーバーレイ）
+	kbArea := container.NewStack(screenKb.Container, kr)
 
 	center := container.NewBorder(layoutSelect, bottomButtons, nil, nil,
-		screenKb.Container)
+		kbArea)
 
 	w.SetContent(container.NewBorder(
 		topBar,       // top
-		container.NewVBox(logContainer, container.NewStack(statusLabel, kr)), // bottom
+		container.NewVBox(logContainer, statusLabel), // bottom
 		nil, nil,
 		center, // center expands
 	))
@@ -674,7 +697,56 @@ func fyneKeyMap(name fyne.KeyName) string {
 	return ""
 }
 
-// keyReceiverRenderer は廃止（keyReceiver は非表示ウィジェット）
+// --- keyReceiver: マウスイベント (desktop.Mouseable, desktop.Hoverable) ---
+
+func (k *keyReceiver) MouseDown(ev *desktop.MouseEvent) {
+	if !mouseEnabled {
+		return
+	}
+	sendMouseEvent(buildMouseButtonEvent(InputShare.EventTypeMouseDown, fyneButtonToMouse(ev.Button)))
+}
+
+func (k *keyReceiver) MouseUp(ev *desktop.MouseEvent) {
+	if !mouseEnabled {
+		return
+	}
+	sendMouseEvent(buildMouseButtonEvent(InputShare.EventTypeMouseUp, fyneButtonToMouse(ev.Button)))
+}
+
+func (k *keyReceiver) MouseIn(ev *desktop.MouseEvent) {}
+func (k *keyReceiver) MouseOut()                      {}
+
+func (k *keyReceiver) MouseMoved(ev *desktop.MouseEvent) {
+	if !mouseEnabled || remoteScreenW == 0 || remoteScreenH == 0 {
+		return
+	}
+	now := time.Now()
+	if now.Sub(lastMouseSend) < mouseThrottle {
+		return
+	}
+	lastMouseSend = now
+
+	// ウィジェットサイズに対する比例座標でリモート画面にマッピング
+	size := k.Size()
+	if size.Width <= 0 || size.Height <= 0 {
+		return
+	}
+	x := int32(float32(ev.Position.X) / size.Width * float32(remoteScreenW))
+	y := int32(float32(ev.Position.Y) / size.Height * float32(remoteScreenH))
+	sendMouseEvent(buildMouseMoveEvent(x, y, false))
+}
+
+func (k *keyReceiver) Scrolled(ev *fyne.ScrollEvent) {
+	if !mouseEnabled {
+		return
+	}
+	dx := int32(ev.Scrolled.DX)
+	dy := int32(ev.Scrolled.DY)
+	if dx == 0 && dy == 0 {
+		return
+	}
+	sendMouseEvent(buildMouseScrollEvent(dx, dy))
+}
 
 // --- server history ---
 
@@ -878,6 +950,139 @@ func buildClipboardEvent(text string) []byte {
 
 	builder.Finish(ev)
 	return builder.FinishedBytes()
+}
+
+// --- mouse events ---
+
+// リモート画面情報
+var (
+	remoteScreenW     int32
+	remoteScreenH     int32
+	remoteScaleFactor float32
+	mouseEnabled      bool      // マウス転送ON/OFF
+	lastMouseSend     time.Time // スロットリング用
+)
+
+const mouseThrottle = 8 * time.Millisecond // ~120Hz
+
+func buildMouseMoveEvent(x, y int32, relative bool) []byte {
+	builderMu.Lock()
+	defer builderMu.Unlock()
+
+	builder.Reset()
+	InputShare.MouseEventStart(builder)
+	InputShare.MouseEventAddX(builder, x)
+	InputShare.MouseEventAddY(builder, y)
+	InputShare.MouseEventAddIsRelative(builder, relative)
+	me := InputShare.MouseEventEnd(builder)
+
+	InputShare.EventStart(builder)
+	InputShare.EventAddEventType(builder, InputShare.EventTypeMouseMove)
+	InputShare.EventAddMouseEvent(builder, me)
+	ev := InputShare.EventEnd(builder)
+
+	builder.Finish(ev)
+	return builder.FinishedBytes()
+}
+
+func buildMouseButtonEvent(eventType InputShare.EventType, button InputShare.MouseButton) []byte {
+	builderMu.Lock()
+	defer builderMu.Unlock()
+
+	builder.Reset()
+	InputShare.MouseEventStart(builder)
+	InputShare.MouseEventAddButton(builder, button)
+	me := InputShare.MouseEventEnd(builder)
+
+	InputShare.EventStart(builder)
+	InputShare.EventAddEventType(builder, eventType)
+	InputShare.EventAddMouseEvent(builder, me)
+	ev := InputShare.EventEnd(builder)
+
+	builder.Finish(ev)
+	return builder.FinishedBytes()
+}
+
+func buildMouseScrollEvent(dx, dy int32) []byte {
+	builderMu.Lock()
+	defer builderMu.Unlock()
+
+	builder.Reset()
+	InputShare.MouseEventStart(builder)
+	InputShare.MouseEventAddScrollDx(builder, dx)
+	InputShare.MouseEventAddScrollDy(builder, dy)
+	me := InputShare.MouseEventEnd(builder)
+
+	InputShare.EventStart(builder)
+	InputShare.EventAddEventType(builder, InputShare.EventTypeMouseScroll)
+	InputShare.EventAddMouseEvent(builder, me)
+	ev := InputShare.EventEnd(builder)
+
+	builder.Finish(ev)
+	return builder.FinishedBytes()
+}
+
+func buildScreenInfoQuery() []byte {
+	builderMu.Lock()
+	defer builderMu.Unlock()
+
+	builder.Reset()
+	InputShare.EventStart(builder)
+	InputShare.EventAddEventType(builder, InputShare.EventTypeScreenInfoQuery)
+	ev := InputShare.EventEnd(builder)
+	builder.Finish(ev)
+	return builder.FinishedBytes()
+}
+
+func readScreenInfo(c net.Conn) (w, h int32, scale float32) {
+	c.SetReadDeadline(time.Now().Add(time.Second))
+	defer c.SetReadDeadline(time.Time{})
+
+	sizeBuf := make([]byte, 4)
+	if _, err := io.ReadFull(c, sizeBuf); err != nil {
+		return 0, 0, 0
+	}
+	msgSize := binary.LittleEndian.Uint32(sizeBuf)
+	if msgSize == 0 || msgSize > 1024 {
+		return 0, 0, 0
+	}
+	msgBuf := make([]byte, msgSize)
+	if _, err := io.ReadFull(c, msgBuf); err != nil {
+		return 0, 0, 0
+	}
+
+	event := InputShare.GetRootAsEvent(msgBuf, 0)
+	if event.EventType() != InputShare.EventTypeScreenInfoReply {
+		return 0, 0, 0
+	}
+	si := new(InputShare.ScreenInfo)
+	if event.ScreenInfo(si) == nil {
+		return 0, 0, 0
+	}
+	return si.Width(), si.Height(), si.ScaleFactor()
+}
+
+// sendMouseEvent はマウスイベントを送信する共通ヘルパー
+func sendMouseEvent(data []byte) {
+	connMu.Lock()
+	c := conn
+	connMu.Unlock()
+	if c == nil {
+		return
+	}
+	sendBuffer(c, data)
+}
+
+// fyneButtonToMouse は Fyne のマウスボタンを InputShare.MouseButton に変換する
+func fyneButtonToMouse(btn desktop.MouseButton) InputShare.MouseButton {
+	switch btn {
+	case desktop.MouseButtonSecondary:
+		return InputShare.MouseButtonRight
+	case desktop.MouseButtonTertiary:
+		return InputShare.MouseButtonMiddle
+	default:
+		return InputShare.MouseButtonLeft
+	}
 }
 
 // --- networking ---

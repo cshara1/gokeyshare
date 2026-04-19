@@ -12,5 +12,6 @@
     "btn_paste": "Paste to remote",
     "btn_log_show": "Log ▼",
     "btn_log_hide": "Log ▲",
-    "status_retrying": "● Retrying in {{.Sec}}s..."
+    "status_retrying": "● Retrying in {{.Sec}}s...",
+    "btn_mouse": "Mouse"
 }
